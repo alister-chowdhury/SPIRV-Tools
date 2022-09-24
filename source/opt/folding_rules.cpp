@@ -2539,6 +2539,76 @@ FoldingRule RedundantIAdd() {
   };
 }
 
+FoldingRule RedundantISub() {
+  return [](IRContext* context, Instruction* inst,
+            const std::vector<const analysis::Constant*>& constants) {
+    assert(inst->opcode() == SpvOpISub && "Wrong opcode. Should be OpISub.");
+
+    if (constants[0] && constants[0]->IsZero()) {
+      inst->SetOpcode(SpvOpSNegate);
+      inst->SetInOperands(
+          {{SPV_OPERAND_TYPE_ID, {inst->GetSingleWordInOperand(1)}}});
+      return true;
+    }
+    if (constants[1] && constants[1]->IsZero()) {
+      const analysis::Type* inst_type =
+          context->get_type_mgr()->GetType(inst->type_id());
+      if (inst_type->IsSame(constants[1]->type())) {
+        inst->SetOpcode(SpvOpCopyObject);
+      } else {
+        inst->SetOpcode(SpvOpBitcast);
+      }
+      inst->SetInOperands(
+          {{SPV_OPERAND_TYPE_ID, {inst->GetSingleWordInOperand(0)}}});
+      return true;
+    }
+    return false;
+  };
+}
+
+FoldingRule RedundantShift() {
+  return [](IRContext* context, Instruction* inst,
+            const std::vector<const analysis::Constant*>& constants) {
+    assert(inst->opcode() == SpvOpShiftLeftLogical ||
+           inst->opcode() == SpvOpShiftRightLogical ||
+           inst->opcode() == SpvOpShiftRightArithmetic);
+    if ((constants[0] && constants[0]->IsZero()) ||
+        (constants[1] && constants[1]->IsZero())) {
+      inst->SetOpcode(SpvOpCopyObject);
+      inst->SetInOperands(
+          {{SPV_OPERAND_TYPE_ID, {inst->GetSingleWordInOperand(0)}}});
+      return true;
+    }
+    return false;
+  };
+}
+
+FoldingRule RedundantXorAndOr() {
+  return [](IRContext* context, Instruction* inst,
+            const std::vector<const analysis::Constant*>& constants) {
+    assert(inst->opcode() == SpvOpBitwiseOr || inst->opcode() == SpvOpBitwiseXor);
+    if (constants[0] && constants[0]->IsZero()) {
+      const analysis::Type* inst_type =
+          context->get_type_mgr()->GetType(inst->type_id());
+      if (inst_type->IsSame(constants[1]->type())) {
+        inst->SetOpcode(SpvOpCopyObject);
+      } else {
+        inst->SetOpcode(SpvOpBitcast);
+      }
+      inst->SetInOperands(
+          {{SPV_OPERAND_TYPE_ID, {inst->GetSingleWordInOperand(1)}}});
+      return true;
+    }
+    if (constants[1] && constants[1]->IsZero()) {
+      inst->SetOpcode(SpvOpCopyObject);
+      inst->SetInOperands(
+          {{SPV_OPERAND_TYPE_ID, {inst->GetSingleWordInOperand(0)}}});
+      return true;
+    }
+    return false;
+  };
+}
+
 // This rule look for a dot with a constant vector containing a single 1 and
 // the rest 0s.  This is the same as doing an extract.
 FoldingRule DotProductDoingExtract() {
@@ -2918,6 +2988,7 @@ void FoldingRules::AddFoldingRules() {
   rules_[SpvOpIMul].push_back(MergeMulMulArithmetic());
   rules_[SpvOpIMul].push_back(MergeMulNegateArithmetic());
 
+  rules_[SpvOpISub].push_back(RedundantISub());
   rules_[SpvOpISub].push_back(MergeSubNegateArithmetic());
   rules_[SpvOpISub].push_back(MergeSubAddArithmetic());
   rules_[SpvOpISub].push_back(MergeSubSubArithmetic());
@@ -2927,6 +2998,16 @@ void FoldingRules::AddFoldingRules() {
   rules_[SpvOpSNegate].push_back(MergeNegateArithmetic());
   rules_[SpvOpSNegate].push_back(MergeNegateMulDivArithmetic());
   rules_[SpvOpSNegate].push_back(MergeNegateAddSubArithmetic());
+
+  rules_[SpvOpShiftLeftLogical].push_back(RedundantShift());
+
+  rules_[SpvOpShiftRightLogical].push_back(RedundantShift());
+
+  rules_[SpvOpShiftRightArithmetic].push_back(RedundantShift());
+
+  rules_[SpvOpBitwiseOr].push_back(RedundantXorAndOr());
+
+  rules_[SpvOpBitwiseXor].push_back(RedundantXorAndOr());
 
   rules_[SpvOpSelect].push_back(RedundantSelect());
 
