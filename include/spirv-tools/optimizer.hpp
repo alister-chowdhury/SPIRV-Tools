@@ -551,6 +551,11 @@ Optimizer::PassToken CreateAggressiveDCEPass(bool preserve_interface);
 Optimizer::PassToken CreateAggressiveDCEPass(bool preserve_interface,
                                              bool remove_outputs);
 
+// Create aggressive folding pass
+// TODO
+// 
+Optimizer::PassToken CreateAggressiveFoldingPass();
+
 // Creates a remove-unused-interface-variables pass.
 // Removes variables referenced on the |OpEntryPoint| instruction that are not
 // referenced in the entry point function or any function in its call tree. Note

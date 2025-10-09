@@ -199,6 +199,8 @@ Optimizer& Optimizer::RegisterPerformancePasses(bool preserve_interface) {
       .RegisterPass(CreateCCPPass())
       .RegisterPass(CreateAggressiveDCEPass(preserve_interface))
       .RegisterPass(CreateLoopUnrollPass(true))
+      .RegisterPass(CreateAggressiveFoldingPass())
+      .RegisterPass(CreateAggressiveDCEPass(preserve_interface))
       .RegisterPass(CreateDeadBranchElimPass())
       .RegisterPass(CreateRedundancyEliminationPass())
       .RegisterPass(CreateCombineAccessChainsPass())
@@ -240,6 +242,8 @@ Optimizer& Optimizer::RegisterSizePasses(bool preserve_interface) {
       .RegisterPass(CreateLocalMultiStoreElimPass())
       .RegisterPass(CreateCCPPass())
       .RegisterPass(CreateLoopUnrollPass(true))
+      .RegisterPass(CreateAggressiveFoldingPass())
+      .RegisterPass(CreateAggressiveDCEPass(preserve_interface))
       .RegisterPass(CreateDeadBranchElimPass())
       .RegisterPass(CreateSimplificationPass())
       .RegisterPass(CreateScalarReplacementPass(0))
@@ -523,6 +527,8 @@ bool Optimizer::RegisterPassFromFlag(const std::string& flag,
     RegisterPass(CreateCodeSinkingPass());
   } else if (pass_name == "fix-storage-class") {
     RegisterPass(CreateFixStorageClassPass());
+  } else if (pass_name == "aggressive-folding") {
+    RegisterPass(CreateAggressiveFoldingPass());
   } else if (pass_name == "O") {
     RegisterPerformancePasses(preserve_interface);
   } else if (pass_name == "Os") {
@@ -894,6 +900,11 @@ Optimizer::PassToken CreateAggressiveDCEPass(bool preserve_interface,
                                              bool remove_outputs) {
   return MakeUnique<Optimizer::PassToken::Impl>(
       MakeUnique<opt::AggressiveDCEPass>(preserve_interface, remove_outputs));
+}
+
+Optimizer::PassToken CreateAggressiveFoldingPass() {
+  return MakeUnique<Optimizer::PassToken::Impl>(
+      MakeUnique<opt::AggressiveFoldingPass>());
 }
 
 Optimizer::PassToken CreateRemoveUnusedInterfaceVariablesPass() {

@@ -18,6 +18,7 @@
 // A single header to include all passes.
 
 #include "source/opt/aggressive_dead_code_elim_pass.h"
+#include "source/opt/aggressive_folding.h"
 #include "source/opt/amd_ext_to_khr.h"
 #include "source/opt/analyze_live_input_pass.h"
 #include "source/opt/block_merge_pass.h"

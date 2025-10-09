@@ -14,6 +14,7 @@
 set(SPIRV_TOOLS_OPT_SOURCES
   fix_func_call_arguments.h
   aggressive_dead_code_elim_pass.h
+  aggressive_folding.h
   amd_ext_to_khr.h
   analyze_live_input_pass.h
   basic_block.h
@@ -137,6 +138,7 @@ set(SPIRV_TOOLS_OPT_SOURCES
 
   fix_func_call_arguments.cpp
   aggressive_dead_code_elim_pass.cpp
+  aggressive_folding.cpp
   amd_ext_to_khr.cpp
   analyze_live_input_pass.cpp
   basic_block.cpp

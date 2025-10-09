@@ -96,6 +96,11 @@ NOTE: The optimizer is a work in progress.
 
 Options (in lexicographical order):)",
       program, program);
+
+  printf(R"(
+  --aggressive-folding
+               TODO)");
+
   printf(R"(
   --amd-ext-to-khr
                Replaces the extensions VK_AMD_shader_ballot, VK_AMD_gcn_shader,
