@@ -24,199 +24,132 @@ namespace spvtools {
 namespace opt {
 namespace {
 
-struct AFPOpTracking
+// Only handle 32bits
+// * Floats are mostly simple (?)
+//
+// * Integers can be treated as unsigned and signed
+//   so the valid range needs to be handled carefully.
+struct OpTrackingScalarValues
 {
   union Bits {
     uint32_t u32;
     int32_t  i32;
     float    f32;
-    bool     b;
-
-    int64_t i64() const { return i32; }
-    uint64_t u64() const { return u32; }
-    double f64() const { return f32; }
   };
 
-  struct PerComponent {
-    
-    bool valid = false;
-    Bits min_value;
-    Bits max_value;
-    Bits signed_bits;
-    Bits unsigned_bits;
+  std::vector<uint32_t>              possible_refs;
+  std::vector<std::pair<Bits, Bits>> possible_val_ranges;
 
-    void Invalidate() {
-      valid = false;
-      min_value.u32 = 0u;
-      max_value.u32 = 0xffffffffu;
-      signed_bits.u32 = 0u;
-      unsigned_bits.u32 = 0u;
-    }
-
-    static PerComponent InitConstant(uint32_t constant) {
-      PerComponent pc {};
-      pc.valid = true;
-      pc.min_value.u32 = constant;
-      pc.max_value.u32 = constant;
-      pc.signed_bits.u32 = constant;
-      pc.unsigned_bits.u32 = ~constant;
-      return pc;
-    }
-    static PerComponent InitConstant(float constant) {
-      PerComponent pc {};
-      pc.valid = true;
-      pc.min_value.f32 = constant;
-      pc.max_value.f32 = constant;
-      pc.signed_bits.f32 = constant;
-      pc.unsigned_bits.u32 = ~pc.signed_bits.u32;
-      return pc;
-    }
-    static PerComponent InitConstant(bool constant) {
-      PerComponent pc {};
-      pc.valid = true;
-      pc.min_value.b = constant;
-      pc.max_value.b = constant;
-      pc.signed_bits.b = constant;
-      pc.unsigned_bits.b = !constant;
-      return pc;
-    }
-
-    bool IsConstant(spv::Op underlying_type) const {
-      switch (underlying_type) {
-      case spv::Op::OpTypeBool: return min_value.b == max_value.b;
-      case spv::Op::OpTypeInt: return min_value.u32 == max_value.u32;
-      case spv::Op::OpTypeFloat: return min_value.f32 == max_value.f32;
-      }
-      return false;
-    }
-
-    void SetI32(int64_t new_min_value, int64_t new_max_value) {
-      Invalidate();
-      if (new_min_value > new_max_value) {
-        std::swap(new_min_value, new_min_value);
-      }
-      // Only keep tracking if no over/underflows occur
-      if ((new_min_value >= INT32_MIN) && (new_max_value <= INT32_MAX)) {
-        valid = true;
-        min_value.i32 = new_min_value;
-        max_value.i32 = new_max_value;
-        if (IsConstant(spv::Op::OpTypeInt)) {
-          signed_bits.u32 = min_value.u32;
-          unsigned_bits.u32 = ~signed_bits.u32;
-        }
-      }
-    }
-
-    void SetU32(uint64_t new_min_value, uint64_t new_max_value) {
-      Invalidate();
-      if (new_min_value > new_max_value) {
-        std::swap(new_min_value, new_min_value);
-      }
-      // Only keep tracking if no overflows occur
-      if (new_max_value <= UINT32_MAX) {
-        valid = true;
-        min_value.u32 = new_min_value;
-        max_value.u32 = new_max_value;
-        if (IsConstant(spv::Op::OpTypeInt)) {
-          signed_bits.u32 = min_value.u32;
-          unsigned_bits.u32 = ~signed_bits.u32;
-        }
-      }
-    }
-
-    void SetF32(double new_min_value, double new_max_value) {
-      Invalidate();
-      if (new_min_value > new_max_value) {
-        std::swap(new_min_value, new_min_value);
-      }
-      // Only keep tracking if no over/underflows occur
-      if ((new_min_value >= FLT_MIN)
-          && (new_max_value <= FLT_MAX)
-          && !isinf(new_min_value)
-          && !isinf(new_max_value)
-          && !isnan(new_min_value)
-          && !isnan(new_max_value)) {
-        valid = true;
-        min_value.f32 = new_min_value;
-        max_value.f32 = new_max_value;
-        if (IsConstant(spv::Op::OpTypeFloat)) {
-          signed_bits.u32 = min_value.u32;
-          unsigned_bits.u32 = ~signed_bits.u32;
-        }
-      }
-    }
-
-#define I32_OP(name, op)\
-    PerComponent name (const PerComponent& B) const {\
-    PerComponent pc {};\
-    if (valid && B.valid) {\
-      pc.SetI32(min_value.i64() op B.min_value.i64(),\
-                max_value.i64() op B.max_value.i64());\
-    }\
-    return pc;\
-    }
-    I32_OP(iadd, +)
-    I32_OP(isub, -)
-    I32_OP(imul, *)
-#undef I32_OP
-
-#define U32_OP(name, op)\
-    PerComponent name (const PerComponent& B) const {\
-      PerComponent pc {};\
-      if (valid && B.valid) {\
-        pc.SetU32(min_value.u64() op B.min_value.u64(),\
-                  max_value.u64() op B.max_value.u64());\
-      }\
-      return pc;\
-    }
-    U32_OP(uadd, +)
-    U32_OP(usub, -)
-    U32_OP(umul, *)
-#undef U32_OP
-
-    PerComponent fadd(const PerComponent& B) const {
-      PerComponent pc {};
-      if (valid && B.valid) {
-        pc.SetF32(min_value.f64() + B.min_value.f64(),
-                  max_value.f64() + B.max_value.f64());
-      }
-      return pc;
-    }
-  };
-
-  /*
-      uint32_t component_type_id = type_inst->GetSingleWordInOperand(0);
-    Instruction* def_component_type =
-        context_->get_def_use_mgr()->GetDef(component_type_id);
-    return def_component_type != nullptr &&
-           IsFoldableScalarType(def_component_type);
-  */
-
-  // If num_components != 0, we're assuming we're working with a OpTypeVector.
-  // Not currently attempting to do anything fancy with matrices.
-  uint32_t num_components = 0u;
-
-  // The underlying data type (e.g spv::Op::OpTypeFloat)
-  spv::Op underlying_type = spv::Op::OpNop;
-
-
-  bool InitialiseFromConstant(const Instruction* inst) {
-    switch (inst->opcode()) {
-    case spv::Op::OpConstantTrue:
-      num_components = 0u;
-      underlying_type = spv::Op::OpTypeBool;
-      return true;
-    case spv::Op::OpConstantFalse:
-      num_components = 0u;
-      underlying_type = spv::Op::OpTypeBool;
-      return true;
-    }
-
-    return false;
+  bool HasData() const {
+    return !( possible_refs.empty()
+      && possible_val_ranges.empty());
   }
 
+  bool HasRefData() const {
+    return !possible_refs.empty();
+  }
 
+  bool HasValueData() const {
+    return !possible_val_ranges.empty();
+  }
+
+  // Merge or add an int range
+  // Expects A < B in unsigned
+  void MergeIntRange(Bits A, Bits B) {
+    // Attempt to merge with existing values first
+    auto it = possible_val_ranges.begin();
+    while (it < possible_val_ranges.end()) {
+      Bits C = it->first;
+      Bits D = it->second;
+      if ((C.u32 >= A.u32) && (C.u32 <= B.u32)) {
+        A.u32 = std::min(A.u32, C.u32);
+        B.u32 = std::min(B.u32, D.u32);
+        it = possible_val_ranges.erase(it);
+      }
+      else {
+        ++it;
+      }
+    }
+    possible_val_ranges.push_back({ A, B });
+  }
+
+  // Push an int range to the stack, if B < A, we're assuming an under/overflow
+  // has occured and split it into two ranges [0, B] and [A, U32MAX]
+  void PushIntRange(Bits A, Bits B) {
+    if (A.u32 > B.u32) {
+      MergeIntRange(Bits{ 0 }, B);
+      MergeIntRange(A, Bits{ UINT32_MAX });
+    }
+    else {
+      MergeIntRange(A, B);
+    }
+  }
+
+  // If we have an int range which is [0, UINTMAX], then practically
+  // speaking, we know nothing and should just mark this as having no
+  // data.
+  void RemoveDataForUnboundedInt() {
+    for (const auto& p : possible_val_ranges) {
+      if (p.first.u32 == 0 && p.second.u32 == UINT32_MAX) {
+        possible_val_ranges.clear();
+        break;
+      }
+    }
+  }
+
+  OpTrackingScalarValues uadd(const OpTrackingScalarValues& b) const {
+    OpTrackingScalarValues v;
+    if (HasValueData() && b.HasValueData()) {
+      for (const std::pair<Bits, Bits>& a_bits : possible_val_ranges) {
+        for (const std::pair<Bits, Bits>& b_bits : b.possible_val_ranges) {
+          Bits b00 = { a_bits.first.u32 - b_bits.first.u32 };
+          Bits b01 = { a_bits.second.u32 - b_bits.first.u32 };
+          Bits b10 = { a_bits.first.u32 - b_bits.second.u32 };
+          Bits b11 = { a_bits.second.u32 - b_bits.second.u32 };
+          v.PushIntRange(b00, b11);
+          // Extra data added to account for over/underflow.
+          v.PushIntRange(b00, b01);
+          v.PushIntRange(b10, b11);
+        }
+      }
+      v.RemoveDataForUnboundedInt();
+    }
+    return v;
+  }
+
+  OpTrackingScalarValues usub(const OpTrackingScalarValues& b) const {
+    
+    OpTrackingScalarValues v;
+
+    if (possible_refs.size() == 1
+      && b.possible_refs.size() == 1
+      && possible_refs[0] == b.possible_refs[0]) {
+      v.possible_val_ranges.clear();
+      v.possible_val_ranges.push_back({ Bits{0}, Bits{0} });
+      return v;
+    }
+
+    if (HasValueData() && b.HasValueData()) {
+      for (const std::pair<Bits, Bits>& a_bits : possible_val_ranges) {
+        for (const std::pair<Bits, Bits>& b_bits : b.possible_val_ranges) {
+          Bits b00 = { a_bits.first.u32 - b_bits.first.u32 };
+          Bits b01 = { a_bits.second.u32 - b_bits.first.u32 };
+          Bits b10 = { a_bits.first.u32 - b_bits.second.u32 };
+          Bits b11 = { a_bits.second.u32 - b_bits.second.u32 };
+          v.PushIntRange(b00, b11);
+          // Extra data added to account for over/underflow.
+          v.PushIntRange(b00, b01);
+          v.PushIntRange(b10, b11);
+        }
+      }
+      v.RemoveDataForUnboundedInt();
+    }
+
+    return v;
+  }
+  
 };
+
 
 }  // namespace
 
