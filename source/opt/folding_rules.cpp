@@ -1475,13 +1475,32 @@ FoldingRule MergeSubSubArithmetic() {
 bool MergeGenericAddendSub(uint32_t addend, uint32_t sub, Instruction* inst) {
   IRContext* context = inst->context();
   analysis::DefUseManager* def_use_mgr = context->get_def_use_mgr();
+
+  bool is_adder = inst->opcode() == spv::Op::OpFAdd
+               || inst->opcode() == spv::Op::OpIAdd;
+
   Instruction* sub_inst = def_use_mgr->GetDef(sub);
-  if (sub_inst->opcode() != spv::Op::OpFSub &&
+  
+  // (a - b) + b = a
+  // b + (a - b) = a
+  if (is_adder) {
+    if (sub_inst->opcode() != spv::Op::OpFSub &&
       sub_inst->opcode() != spv::Op::OpISub)
-    return false;
-  if (sub_inst->opcode() == spv::Op::OpFSub &&
+      return false;
+    if (sub_inst->opcode() == spv::Op::OpFSub &&
       !sub_inst->IsFloatingPointFoldingAllowed())
-    return false;
+      return false;
+  }
+  // (a + b) - b = a
+  // a - (a + b) = a
+  else {
+    if (sub_inst->opcode() != spv::Op::OpFAdd &&
+      sub_inst->opcode() != spv::Op::OpIAdd)
+      return false;
+    if (sub_inst->opcode() == spv::Op::OpFAdd &&
+      !sub_inst->IsFloatingPointFoldingAllowed())
+      return false;
+  }
   if (addend != sub_inst->GetSingleWordInOperand(1)) return false;
   inst->SetOpcode(spv::Op::OpCopyObject);
   inst->SetInOperands(
@@ -1496,11 +1515,15 @@ bool MergeGenericAddendSub(uint32_t addend, uint32_t sub, Instruction* inst) {
 // Cases:
 // (a - b) + b = a
 // b + (a - b) = a
+// (a + b) - b = a
+// a - (a + b) = a
 FoldingRule MergeGenericAddSubArithmetic() {
   return [](IRContext* context, Instruction* inst,
             const std::vector<const analysis::Constant*>&) {
     assert(inst->opcode() == spv::Op::OpFAdd ||
-           inst->opcode() == spv::Op::OpIAdd);
+           inst->opcode() == spv::Op::OpIAdd ||
+           inst->opcode() == spv::Op::OpFSub ||
+           inst->opcode() == spv::Op::OpISub);
     const analysis::Type* type =
         context->get_type_mgr()->GetType(inst->type_id());
 
@@ -3154,6 +3177,7 @@ void FoldingRules::AddFoldingRules() {
   rules_[spv::Op::OpFSub].push_back(RedundantFSub());
   rules_[spv::Op::OpFSub].push_back(MergeSubNegateArithmetic());
   rules_[spv::Op::OpFSub].push_back(MergeSubAddArithmetic());
+  rules_[spv::Op::OpFSub].push_back(MergeGenericAddSubArithmetic());
   rules_[spv::Op::OpFSub].push_back(MergeSubSubArithmetic());
 
   rules_[spv::Op::OpIAdd].push_back(MergeAddNegateArithmetic());
@@ -3168,6 +3192,7 @@ void FoldingRules::AddFoldingRules() {
 
   rules_[spv::Op::OpISub].push_back(MergeSubNegateArithmetic());
   rules_[spv::Op::OpISub].push_back(MergeSubAddArithmetic());
+  rules_[spv::Op::OpISub].push_back(MergeGenericAddSubArithmetic());
   rules_[spv::Op::OpISub].push_back(MergeSubSubArithmetic());
 
   rules_[spv::Op::OpPhi].push_back(RedundantPhi());
