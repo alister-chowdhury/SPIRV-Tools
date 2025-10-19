@@ -6889,6 +6889,354 @@ INSTANTIATE_TEST_SUITE_P(ReassociateCommutiveBitwiseTest, MatchingInstructionFol
       2, true)
 ));
 
+INSTANTIATE_TEST_SUITE_P(FoldXorXorCancellationTest, MatchingInstructionFoldingTest,
+  ::testing::Values(
+    // Test case 0
+    // Fold: y ^ (x ^ y) = x
+    InstructionFoldingCase<bool>(
+      Header() +
+      "; CHECK: [[uint:%\\w+]] = OpTypeInt 32 0\n" +
+      "; CHECK: [[ldx:%\\w+]] = OpLoad [[uint]]\n" +
+      "; CHECK: [[ldy:%\\w+]] = OpLoad [[uint]] [[y:%\\w+]]\n" +
+      "; CHECK: %2 = OpCopyObject [[uint]] [[ldx]]\n" +
+      "%main = OpFunction %void None %void_func\n" +
+      "%main_lab = OpLabel\n" +
+      "%n = OpVariable %_ptr_uint Function\n" +
+      "%m = OpVariable %_ptr_uint Function\n" +
+      "%x = OpLoad %uint %n\n" +
+      "%y = OpLoad %uint %m\n" +
+      "%3 = OpBitwiseXor %uint %x %y\n" +
+      "%2 = OpBitwiseXor %uint %y %3\n" +
+      "OpReturn\n" +
+      "OpFunctionEnd",
+      2, true),
+
+    // Test case 1
+    // Fold: (x ^ y) ^ y = x
+    InstructionFoldingCase<bool>(
+      Header() +
+      "; CHECK: [[uint:%\\w+]] = OpTypeInt 32 0\n" +
+      "; CHECK: [[ldx:%\\w+]] = OpLoad [[uint]]\n" +
+      "; CHECK: [[ldy:%\\w+]] = OpLoad [[uint]] [[y:%\\w+]]\n" +
+      "; CHECK: %2 = OpCopyObject [[uint]] [[ldx]]\n" +
+      "%main = OpFunction %void None %void_func\n" +
+      "%main_lab = OpLabel\n" +
+      "%n = OpVariable %_ptr_uint Function\n" +
+      "%m = OpVariable %_ptr_uint Function\n" +
+      "%x = OpLoad %uint %n\n" +
+      "%y = OpLoad %uint %m\n" +
+      "%3 = OpBitwiseXor %uint %x %y\n" +
+      "%2 = OpBitwiseXor %uint %3 %y\n" +
+      "OpReturn\n" +
+      "OpFunctionEnd",
+      2, true),
+
+    // Test case 2
+    // Fold: y ^ (y ^ x) = x
+    InstructionFoldingCase<bool>(
+      Header() +
+      "; CHECK: [[uint:%\\w+]] = OpTypeInt 32 0\n" +
+      "; CHECK: [[ldx:%\\w+]] = OpLoad [[uint]]\n" +
+      "; CHECK: [[ldy:%\\w+]] = OpLoad [[uint]] [[y:%\\w+]]\n" +
+      "; CHECK: %2 = OpCopyObject [[uint]] [[ldx]]\n" +
+      "%main = OpFunction %void None %void_func\n" +
+      "%main_lab = OpLabel\n" +
+      "%n = OpVariable %_ptr_uint Function\n" +
+      "%m = OpVariable %_ptr_uint Function\n" +
+      "%x = OpLoad %uint %n\n" +
+      "%y = OpLoad %uint %m\n" +
+      "%3 = OpBitwiseXor %uint %y %x\n" +
+      "%2 = OpBitwiseXor %uint %y %3\n" +
+      "OpReturn\n" +
+      "OpFunctionEnd",
+      2, true),
+
+    // Test case 3
+    // Fold: (y ^ x) ^ y = x
+    InstructionFoldingCase<bool>(
+      Header() +
+      "; CHECK: [[uint:%\\w+]] = OpTypeInt 32 0\n" +
+      "; CHECK: [[ldx:%\\w+]] = OpLoad [[uint]]\n" +
+      "; CHECK: [[ldy:%\\w+]] = OpLoad [[uint]] [[y:%\\w+]]\n" +
+      "; CHECK: %2 = OpCopyObject [[uint]] [[ldx]]\n" +
+      "%main = OpFunction %void None %void_func\n" +
+      "%main_lab = OpLabel\n" +
+      "%n = OpVariable %_ptr_uint Function\n" +
+      "%m = OpVariable %_ptr_uint Function\n" +
+      "%x = OpLoad %uint %n\n" +
+      "%y = OpLoad %uint %m\n" +
+      "%3 = OpBitwiseXor %uint %y %x\n" +
+      "%2 = OpBitwiseXor %uint %3 %y\n" +
+      "OpReturn\n" +
+      "OpFunctionEnd",
+      2, true)
+  ));
+
+INSTANTIATE_TEST_SUITE_P(FoldXorXorCancellation2Test, MatchingInstructionFoldingTest,
+  ::testing::Values(
+    // Test case 0
+    // Fold: (x ^ a) ^ (x ^ b) = a ^ b
+    InstructionFoldingCase<bool>(
+      Header() +
+      "; CHECK: [[uint:%\\w+]] = OpTypeInt 32 0\n" +
+      "; CHECK: [[lda:%\\w+]] = OpLoad [[uint]]\n" +
+      "; CHECK: [[ldb:%\\w+]] = OpLoad [[uint]] [[b:%\\w+]]\n" +
+      "; CHECK: [[ldx:%\\w+]] = OpLoad [[uint]] [[x:%\\w+]]\n" +
+      "; CHECK: %2 = OpBitwiseXor [[uint]] [[lda]] [[ldb]]\n" +
+      "%main = OpFunction %void None %void_func\n" +
+      "%main_lab = OpLabel\n" +
+      "%n = OpVariable %_ptr_uint Function\n" +
+      "%m = OpVariable %_ptr_uint Function\n" +
+      "%o = OpVariable %_ptr_uint Function\n" +
+      "%a = OpLoad %uint %n\n" +
+      "%b = OpLoad %uint %m\n" +
+      "%x = OpLoad %uint %o\n" +
+      "%xa = OpBitwiseXor %uint %x %a\n" +
+      "%xb = OpBitwiseXor %uint %x %b\n" +
+      "%2 = OpBitwiseXor %uint %xa %xb\n" +
+      "OpReturn\n" +
+      "OpFunctionEnd",
+      2, true),
+
+    // Test case 1
+    // Fold: (x ^ a) ^ (b ^ x) = a ^ b
+    InstructionFoldingCase<bool>(
+      Header() +
+      "; CHECK: [[uint:%\\w+]] = OpTypeInt 32 0\n" +
+      "; CHECK: [[lda:%\\w+]] = OpLoad [[uint]]\n" +
+      "; CHECK: [[ldb:%\\w+]] = OpLoad [[uint]] [[b:%\\w+]]\n" +
+      "; CHECK: [[ldx:%\\w+]] = OpLoad [[uint]] [[x:%\\w+]]\n" +
+      "; CHECK: %2 = OpBitwiseXor [[uint]] [[lda]] [[ldb]]\n" +
+      "%main = OpFunction %void None %void_func\n" +
+      "%main_lab = OpLabel\n" +
+      "%n = OpVariable %_ptr_uint Function\n" +
+      "%m = OpVariable %_ptr_uint Function\n" +
+      "%o = OpVariable %_ptr_uint Function\n" +
+      "%a = OpLoad %uint %n\n" +
+      "%b = OpLoad %uint %m\n" +
+      "%x = OpLoad %uint %o\n" +
+      "%xa = OpBitwiseXor %uint %x %a\n" +
+      "%xb = OpBitwiseXor %uint %b %x\n" +
+      "%2 = OpBitwiseXor %uint %xa %xb\n" +
+      "OpReturn\n" +
+      "OpFunctionEnd",
+      2, true),
+
+    // Test case 2
+    // Fold: (a ^ x) ^ (x ^ b) = a ^ b
+    InstructionFoldingCase<bool>(
+      Header() +
+      "; CHECK: [[uint:%\\w+]] = OpTypeInt 32 0\n" +
+      "; CHECK: [[lda:%\\w+]] = OpLoad [[uint]]\n" +
+      "; CHECK: [[ldb:%\\w+]] = OpLoad [[uint]] [[b:%\\w+]]\n" +
+      "; CHECK: [[ldx:%\\w+]] = OpLoad [[uint]] [[x:%\\w+]]\n" +
+      "; CHECK: %2 = OpBitwiseXor [[uint]] [[lda]] [[ldb]]\n" +
+      "%main = OpFunction %void None %void_func\n" +
+      "%main_lab = OpLabel\n" +
+      "%n = OpVariable %_ptr_uint Function\n" +
+      "%m = OpVariable %_ptr_uint Function\n" +
+      "%o = OpVariable %_ptr_uint Function\n" +
+      "%a = OpLoad %uint %n\n" +
+      "%b = OpLoad %uint %m\n" +
+      "%x = OpLoad %uint %o\n" +
+      "%xa = OpBitwiseXor %uint %a %x\n" +
+      "%xb = OpBitwiseXor %uint %x %b\n" +
+      "%2 = OpBitwiseXor %uint %xa %xb\n" +
+      "OpReturn\n" +
+      "OpFunctionEnd",
+      2, true),
+
+    // Test case 3
+    // Fold: (a ^ x) ^ (b ^ x) = a ^ b
+    InstructionFoldingCase<bool>(
+      Header() +
+      "; CHECK: [[uint:%\\w+]] = OpTypeInt 32 0\n" +
+      "; CHECK: [[lda:%\\w+]] = OpLoad [[uint]]\n" +
+      "; CHECK: [[ldb:%\\w+]] = OpLoad [[uint]] [[b:%\\w+]]\n" +
+      "; CHECK: [[ldx:%\\w+]] = OpLoad [[uint]] [[x:%\\w+]]\n" +
+      "; CHECK: %2 = OpBitwiseXor [[uint]] [[lda]] [[ldb]]\n" +
+      "%main = OpFunction %void None %void_func\n" +
+      "%main_lab = OpLabel\n" +
+      "%n = OpVariable %_ptr_uint Function\n" +
+      "%m = OpVariable %_ptr_uint Function\n" +
+      "%o = OpVariable %_ptr_uint Function\n" +
+      "%a = OpLoad %uint %n\n" +
+      "%b = OpLoad %uint %m\n" +
+      "%x = OpLoad %uint %o\n" +
+      "%xa = OpBitwiseXor %uint %a %x\n" +
+      "%xb = OpBitwiseXor %uint %b %x\n" +
+      "%2 = OpBitwiseXor %uint %xa %xb\n" +
+      "OpReturn\n" +
+      "OpFunctionEnd",
+      2, true)
+  ));
+
+INSTANTIATE_TEST_SUITE_P(RedundantOrAndTest, MatchingInstructionFoldingTest,
+  ::testing::Values(
+    // Test case 0
+    // Fold: x | (x & y) = x
+    InstructionFoldingCase<bool>(
+      Header() +
+      "; CHECK: [[uint:%\\w+]] = OpTypeInt 32 0\n" +
+      "; CHECK: [[ldx:%\\w+]] = OpLoad [[uint]]\n" +
+      "; CHECK: [[ldy:%\\w+]] = OpLoad [[uint]] [[y:%\\w+]]\n" +
+      "; CHECK: %2 = OpCopyObject [[uint]] [[ldx]]\n" +
+      "%main = OpFunction %void None %void_func\n" +
+      "%main_lab = OpLabel\n" +
+      "%n = OpVariable %_ptr_uint Function\n" +
+      "%m = OpVariable %_ptr_uint Function\n" +
+      "%x = OpLoad %uint %n\n" +
+      "%y = OpLoad %uint %m\n" +
+      "%3 = OpBitwiseAnd %uint %x %y\n" +
+      "%2 = OpBitwiseOr %uint %x %3\n" +
+      "OpReturn\n" +
+      "OpFunctionEnd",
+      2, true),
+
+    // Test case 1
+    // Fold: (x & y) | x = x
+    InstructionFoldingCase<bool>(
+      Header() +
+      "; CHECK: [[uint:%\\w+]] = OpTypeInt 32 0\n" +
+      "; CHECK: [[ldx:%\\w+]] = OpLoad [[uint]]\n" +
+      "; CHECK: [[ldy:%\\w+]] = OpLoad [[uint]] [[y:%\\w+]]\n" +
+      "; CHECK: %2 = OpCopyObject [[uint]] [[ldx]]\n" +
+      "%main = OpFunction %void None %void_func\n" +
+      "%main_lab = OpLabel\n" +
+      "%n = OpVariable %_ptr_uint Function\n" +
+      "%m = OpVariable %_ptr_uint Function\n" +
+      "%x = OpLoad %uint %n\n" +
+      "%y = OpLoad %uint %m\n" +
+      "%3 = OpBitwiseAnd %uint %x %y\n" +
+      "%2 = OpBitwiseOr %uint %3 %x\n" +
+      "OpReturn\n" +
+      "OpFunctionEnd",
+      2, true),
+
+    // Test case 2
+    // Fold: x | (y & x) = x
+    InstructionFoldingCase<bool>(
+      Header() +
+      "; CHECK: [[uint:%\\w+]] = OpTypeInt 32 0\n" +
+      "; CHECK: [[ldx:%\\w+]] = OpLoad [[uint]]\n" +
+      "; CHECK: [[ldy:%\\w+]] = OpLoad [[uint]] [[y:%\\w+]]\n" +
+      "; CHECK: %2 = OpCopyObject [[uint]] [[ldx]]\n" +
+      "%main = OpFunction %void None %void_func\n" +
+      "%main_lab = OpLabel\n" +
+      "%n = OpVariable %_ptr_uint Function\n" +
+      "%m = OpVariable %_ptr_uint Function\n" +
+      "%x = OpLoad %uint %n\n" +
+      "%y = OpLoad %uint %m\n" +
+      "%3 = OpBitwiseAnd %uint %y %x\n" +
+      "%2 = OpBitwiseOr %uint %x %3\n" +
+      "OpReturn\n" +
+      "OpFunctionEnd",
+      2, true),
+
+    // Test case 3
+    // Fold: (y & x) | x = x
+    InstructionFoldingCase<bool>(
+      Header() +
+      "; CHECK: [[uint:%\\w+]] = OpTypeInt 32 0\n" +
+      "; CHECK: [[ldx:%\\w+]] = OpLoad [[uint]]\n" +
+      "; CHECK: [[ldy:%\\w+]] = OpLoad [[uint]] [[y:%\\w+]]\n" +
+      "; CHECK: %2 = OpCopyObject [[uint]] [[ldx]]\n" +
+      "%main = OpFunction %void None %void_func\n" +
+      "%main_lab = OpLabel\n" +
+      "%n = OpVariable %_ptr_uint Function\n" +
+      "%m = OpVariable %_ptr_uint Function\n" +
+      "%x = OpLoad %uint %n\n" +
+      "%y = OpLoad %uint %m\n" +
+      "%3 = OpBitwiseAnd %uint %y %x\n" +
+      "%2 = OpBitwiseOr %uint %3 %x\n" +
+      "OpReturn\n" +
+      "OpFunctionEnd",
+      2, true)
+  ));
+
+INSTANTIATE_TEST_SUITE_P(RedundantAndOrTest, MatchingInstructionFoldingTest,
+  ::testing::Values(
+    // Test case 0
+    // Fold: x & (x | y) = x
+    InstructionFoldingCase<bool>(
+      Header() +
+      "; CHECK: [[uint:%\\w+]] = OpTypeInt 32 0\n" +
+      "; CHECK: [[ldx:%\\w+]] = OpLoad [[uint]]\n" +
+      "; CHECK: [[ldy:%\\w+]] = OpLoad [[uint]] [[y:%\\w+]]\n" +
+      "; CHECK: %2 = OpCopyObject [[uint]] [[ldx]]\n" +
+      "%main = OpFunction %void None %void_func\n" +
+      "%main_lab = OpLabel\n" +
+      "%n = OpVariable %_ptr_uint Function\n" +
+      "%m = OpVariable %_ptr_uint Function\n" +
+      "%x = OpLoad %uint %n\n" +
+      "%y = OpLoad %uint %m\n" +
+      "%3 = OpBitwiseOr %uint %x %y\n" +
+      "%2 = OpBitwiseAnd %uint %x %3\n" +
+      "OpReturn\n" +
+      "OpFunctionEnd",
+      2, true),
+
+    // Test case 1
+    // Fold: (x | y) & x = x
+    InstructionFoldingCase<bool>(
+      Header() +
+      "; CHECK: [[uint:%\\w+]] = OpTypeInt 32 0\n" +
+      "; CHECK: [[ldx:%\\w+]] = OpLoad [[uint]]\n" +
+      "; CHECK: [[ldy:%\\w+]] = OpLoad [[uint]] [[y:%\\w+]]\n" +
+      "; CHECK: %2 = OpCopyObject [[uint]] [[ldx]]\n" +
+      "%main = OpFunction %void None %void_func\n" +
+      "%main_lab = OpLabel\n" +
+      "%n = OpVariable %_ptr_uint Function\n" +
+      "%m = OpVariable %_ptr_uint Function\n" +
+      "%x = OpLoad %uint %n\n" +
+      "%y = OpLoad %uint %m\n" +
+      "%3 = OpBitwiseOr %uint %x %y\n" +
+      "%2 = OpBitwiseAnd %uint %3 %x\n" +
+      "OpReturn\n" +
+      "OpFunctionEnd",
+      2, true),
+
+    // Test case 2
+    // Fold: x & (y | x) = x
+    InstructionFoldingCase<bool>(
+      Header() +
+      "; CHECK: [[uint:%\\w+]] = OpTypeInt 32 0\n" +
+      "; CHECK: [[ldx:%\\w+]] = OpLoad [[uint]]\n" +
+      "; CHECK: [[ldy:%\\w+]] = OpLoad [[uint]] [[y:%\\w+]]\n" +
+      "; CHECK: %2 = OpCopyObject [[uint]] [[ldx]]\n" +
+      "%main = OpFunction %void None %void_func\n" +
+      "%main_lab = OpLabel\n" +
+      "%n = OpVariable %_ptr_uint Function\n" +
+      "%m = OpVariable %_ptr_uint Function\n" +
+      "%x = OpLoad %uint %n\n" +
+      "%y = OpLoad %uint %m\n" +
+      "%3 = OpBitwiseOr %uint %y %x\n" +
+      "%2 = OpBitwiseAnd %uint %x %3\n" +
+      "OpReturn\n" +
+      "OpFunctionEnd",
+      2, true),
+
+    // Test case 3
+    // Fold: (y | x) & x = x
+    InstructionFoldingCase<bool>(
+      Header() +
+      "; CHECK: [[uint:%\\w+]] = OpTypeInt 32 0\n" +
+      "; CHECK: [[ldx:%\\w+]] = OpLoad [[uint]]\n" +
+      "; CHECK: [[ldy:%\\w+]] = OpLoad [[uint]] [[y:%\\w+]]\n" +
+      "; CHECK: %2 = OpCopyObject [[uint]] [[ldx]]\n" +
+      "%main = OpFunction %void None %void_func\n" +
+      "%main_lab = OpLabel\n" +
+      "%n = OpVariable %_ptr_uint Function\n" +
+      "%m = OpVariable %_ptr_uint Function\n" +
+      "%x = OpLoad %uint %n\n" +
+      "%y = OpLoad %uint %m\n" +
+      "%3 = OpBitwiseOr %uint %y %x\n" +
+      "%2 = OpBitwiseAnd %uint %3 %x\n" +
+      "OpReturn\n" +
+      "OpFunctionEnd",
+      2, true)
+  ));
+
 INSTANTIATE_TEST_SUITE_P(ReciprocalFDivTest, MatchingInstructionFoldingTest,
 ::testing::Values(
   // Test case 0: scalar reicprocal

@@ -16,6 +16,7 @@
 
 #include <limits>
 #include <memory>
+#include <tuple>
 #include <utility>
 
 #include "ir_builder.h"
@@ -25,6 +26,314 @@
 namespace spvtools {
 namespace opt {
 namespace {
+
+// Simple Pattern Matcher
+//
+// Helper to remove some of the boiler-plate from creating folding rules
+// and hopefully reduce some of the human error that's easy to slip in.
+//
+// If we wanted to fold the expression(s):
+// x ^ (x | y) = x
+// (x | y) ^ x = x
+// x ^ (y | x) = x
+// (y | x) ^ x = x
+//
+// Normally we would have to do something like:
+// ```
+// if (inst->opcode() == spv::Op::OpBitwiseOr) {
+//   analysis::DefUseManager* def_use_mgr = context->get_def_use_mgr();
+//   Instruction* lhs = def_use_mgr->GetDef(inst->GetSingleWordInOperand(0));
+//   Instruction* rhs = def_use_mgr->GetDef(inst->GetSingleWordInOperand(1));
+//   Instruction* x = {};
+//   if (rhs->opcode() == spv::Op::OpBitwiseAnd) {
+//      if (def_use_mgr->GetDef(rhs->GetSingleWordInOperand(0)) == lhs) {
+//        x = lhs;
+//      }
+//      else if (def_use_mgr->GetDef(rhs->GetSingleWordInOperand(1)) == lhs) {
+//        x = lhs;
+//      }
+//   }
+//   if (!x && lhs->opcode() == spv::Op::OpBitwiseAnd) {
+//      if (def_use_mgr->GetDef(lhs->GetSingleWordInOperand(0)) == rhs) {
+//        x = rhs;
+//      }
+//      else if (def_use_mgr->GetDef(lhs->GetSingleWordInOperand(1)) == rhs) {
+//        x = rhs;
+//      }
+//   }
+//
+//   // Match found
+//   if (x) {
+//     ...
+//   }
+// }
+// ```
+//
+// We could fold specifically `x ^ (x | y) = x` with pattern matching
+// like this:
+// ```
+// using namespace spm;
+// using Pattern = PM2< Ops<spv::Op::OpBitwiseOr>,
+//                      // don't capture "self" (ArgAny)
+//                      // capture 'x' into 0th index (Arg<0>)
+//                      ArgAny, /* self */
+//                      Arg<0>, /* lhs */
+//                              /* rhs & node */
+//                      PM2<Ops<spv::Op::OpBitwiseAnd>,
+//                          // validate lhs is the same 'x' (Arg<0>)
+//                          // capture 'y' into the 1st index (Arg<1>)
+//                          ArgAny, /* self */
+//                          Arg<0>, /* lhs */
+//                          Arg<1>  /* rhs */>>;
+//
+// MatchResultsTypeFromPattern<Pattern> match_results {};
+// if (Pattern::TryMatch(context, inst, match_results)) {
+//    Instruction* x = std::get<0>(match_results); // Arg<0>
+//    Instruction* y = std::get<1>(match_results); // Arg<1>
+//    ...
+// }
+// ```
+//
+// But we can handle all cases of:
+// x ^ (x | y) = x
+// (x | y) ^ x = x
+// x ^ (y | x) = x
+// (y | x) ^ x = x
+//
+// By changing PM2 to PM2_Asc.
+// This will first applying LHS(inst->lhs) && RHS(inst->lhs), but if that
+// fails, will try RHS(inst->lhs) && LHS(inst->rhs).
+//
+// We also don't actually need or care about capturing 'y', so lets not.
+// We can substitute it with an ArgAny, so it always matches.
+// Making our new code:
+// ```
+// using Pattern = PM2_Asc<Ops<spv::Op::OpBitwiseOr>, ArgAny, Arg<0>,
+//                      PM2_Asc<Ops<spv::Op::OpBitwiseAnd>, ArgAny, Arg<0>,
+//                      ArgAny>>;
+//
+// MatchResultsTypeFromPattern<Pattern> match_results {};
+// if (Pattern::TryMatch(context, inst, match_results)) {
+//    Instruction* x = std::get<0>(match_results); // Arg<0>
+//    ...
+// }
+//```
+namespace spm {
+
+// An instruction argument that forms part of a pattern.
+// Matching will succeed if this argument claim the index or if already
+// claimed, it was by the same instruction.
+template <uint32_t index>
+struct Arg {
+  static constexpr uint32_t max_index = index;
+  static constexpr bool is_matcher = false;
+  template <class MatchResults>
+  static bool TryMatch(IRContext*, Instruction* inst,
+                       MatchResults& match_results) {
+    static_assert(std::tuple_size_v < MatchResults >> max_index,
+                  "match_results is not big enough capture argument!");
+    Instruction*& matched_inst = std::get<index>(match_results);
+    if (!matched_inst) {
+      matched_inst = inst;
+      return true;
+    }
+    return matched_inst == inst;
+  }
+};
+
+// An instruction argument that forms part of a pattern.
+// Matching will always succeed and no claim is made.
+struct ArgAny {
+  static constexpr bool is_matcher = false;
+  static constexpr uint32_t max_index = 0;
+
+  template <class MatchResults>
+  static bool TryMatch(IRContext*, Instruction*, MatchResults&) {
+    return true;
+  }
+};
+
+// Can be used in place of a spv::Op for the op argument
+// of a pattern, to match against multiple op codes.
+template <spv::Op... valid_ops>
+struct Ops {
+  static_assert(sizeof...(valid_ops) != 0,
+                "No ops provided, this will never match anything!");
+  constexpr static bool Eq(spv::Op op) {
+    return ((valid_ops == op) || ... || false);
+  }
+};
+
+// Can be used in place of a spv::Op for the op argument
+// of a pattern, to match against any op codes.
+struct OpAny {
+  constexpr static bool Eq(spv::Op) { return true; }
+};
+
+// Pattern matcher for an instruction with a single argument.
+// e.g:
+// * OpNot
+// * OpLogicalNot
+template <class Op, class ArgSelf, class Arg0>
+struct PM1 {
+  static constexpr bool is_matcher = true;
+  static constexpr uint32_t max_index = ArgSelf::max_index > Arg0::max_index
+                                            ? ArgSelf::max_index
+                                            : Arg0::max_index;
+
+  static_assert(!ArgSelf::is_matcher,
+                "Arg or ArgAny should be provided for self capturing!");
+
+  template <class MatchResults>
+  static bool TryMatch(IRContext* context, Instruction* inst,
+                       MatchResults& match_results) {
+    static_assert(std::tuple_size_v < MatchResults >> max_index,
+                  "match_results is not big enough capture argument!");
+    if (Op::Eq(inst->opcode()) &&
+        ArgSelf::TryMatch(context, inst, match_results)) {
+      assert(inst->NumInOperandWords() == 1);
+      Instruction* child =
+          context->get_def_use_mgr()->GetDef(inst->GetSingleWordInOperand(0));
+      return Arg0::TryMatch(context, child, match_results);
+    }
+    return false;
+  }
+};
+
+// Pattern matcher for an instruction with two arguments.
+// e.g:
+// * OpFSub
+// * OpShiftRightLogical
+template <class Op, class ArgSelf, class ArgLhs, class ArgRhs>
+struct PM2 {
+  static constexpr bool is_matcher = true;
+  static constexpr uint32_t max_index_0 = ArgLhs::max_index > ArgRhs::max_index
+                                              ? ArgLhs::max_index
+                                              : ArgRhs::max_index;
+  static constexpr uint32_t max_index =
+      ArgSelf::max_index > max_index_0 ? ArgSelf::max_index : max_index_0;
+
+  static_assert(!ArgSelf::is_matcher,
+                "Arg or ArgAny should be provided for self capturing!");
+
+  template <class MatchResults>
+  static bool TryMatch(IRContext* context, Instruction* inst,
+                       MatchResults& match_results) {
+    static_assert(std::tuple_size_v < MatchResults >> max_index,
+                  "match_results is not big enough capture argument!");
+    if (Op::Eq(inst->opcode()) &&
+        ArgSelf::TryMatch(context, inst, match_results)) {
+      assert(inst->NumInOperandWords() == 2);
+      analysis::DefUseManager* def_use_mgr = context->get_def_use_mgr();
+      MatchResults original_results = match_results;
+      Instruction* lhs = def_use_mgr->GetDef(inst->GetSingleWordInOperand(0));
+      if (!ArgLhs::TryMatch(context, lhs, match_results)) {
+        return false;
+      }
+      Instruction* rhs = def_use_mgr->GetDef(inst->GetSingleWordInOperand(1));
+      if (ArgRhs::TryMatch(context, rhs, match_results)) {
+        return true;
+      }
+      // It's possible LHS(lhs) was too greedy, attempt to
+      // evaluate RHS(rhs) first.
+      match_results = original_results;
+      return ArgRhs::TryMatch(context, rhs, match_results) &&
+             ArgLhs::TryMatch(context, lhs, match_results);
+    }
+    return false;
+  }
+};
+
+// Pattern matcher for an instruction with two arguments for ops where
+// order doesn't matter.
+// e.g:
+// * OpBitwiseXor
+// * OpBitwiseAnd
+//
+// If LHS(lhs), RHS(rhs) fails, then the sides are swapped
+// and RHS(lhs), LHS(rhs) is tested.
+template <class Op, class ArgSelf, class ArgLhs, class ArgRhs>
+struct PM2_Asc {
+  static constexpr bool is_matcher = true;
+  static constexpr uint32_t max_index_0 = ArgLhs::max_index > ArgRhs::max_index
+                                              ? ArgLhs::max_index
+                                              : ArgRhs::max_index;
+  static constexpr uint32_t max_index =
+      ArgSelf::max_index > max_index_0 ? ArgSelf::max_index : max_index_0;
+
+  static_assert(!ArgSelf::is_matcher,
+                "Arg or ArgAny should be provided for self capturing!");
+
+  template <class MatchResults>
+  static bool TryMatch(IRContext* context, Instruction* inst,
+                       MatchResults& match_results) {
+    static_assert(std::tuple_size_v < MatchResults >> max_index,
+                  "match_results is not big enough capture argument!");
+    if (Op::Eq(inst->opcode()) &&
+        ArgSelf::TryMatch(context, inst, match_results)) {
+      assert(inst->NumInOperandWords() == 2);
+      MatchResults original_results = match_results;
+      analysis::DefUseManager* def_use_mgr = context->get_def_use_mgr();
+      Instruction* lhs = def_use_mgr->GetDef(inst->GetSingleWordInOperand(0));
+      Instruction* rhs = def_use_mgr->GetDef(inst->GetSingleWordInOperand(1));
+
+      // Attempt to use LHS(lhs), RHS(rhs)
+      if (ArgLhs::TryMatch(context, lhs, match_results)) {
+        if (ArgRhs::TryMatch(context, rhs, match_results)) {
+          return true;
+        }
+        // It's possible LHS(lhs) was too greedy, attempt to
+        // evaluate RHS(rhs) first.
+        match_results = original_results;
+        if (ArgRhs::TryMatch(context, rhs, match_results) &&
+            ArgLhs::TryMatch(context, lhs, match_results)) {
+          return true;
+        }
+      }
+
+      // Attempt to use RHS(lhs), LHS(rhs)
+      match_results = original_results;
+      if (ArgRhs::TryMatch(context, lhs, match_results)) {
+        if (ArgLhs::TryMatch(context, rhs, match_results)) {
+          return true;
+        }
+        // It's possible RHS(lhs) was too greedy, attempt to
+        // evaluate LHS(rhs) first.
+        match_results = original_results;
+        if (ArgLhs::TryMatch(context, rhs, match_results) &&
+            ArgRhs::TryMatch(context, lhs, match_results)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+};
+
+// Helper function for deriving the tuple needed, given the
+// maximum index accessed.
+// Internally, this is done by being fed in an integer sequence,
+// which is them variadically laundered into an Instruction ptr.
+template <typename>
+struct MatchResultsTypeHelper;
+template <size_t... N>
+struct MatchResultsTypeHelper<std::index_sequence<N...>> {
+  template <size_t>
+  using InstWrap = Instruction*;
+  using type = std::tuple<InstWrap<N>...>;
+};
+
+// Generates a tuple given the maximum index written back to.
+template <uint32_t max_index>
+using MatchResultsType = typename MatchResultsTypeHelper<
+    std::make_index_sequence<max_index + 1>>::type;
+
+// Generates a tuple given the maximum index written back to by
+// an instruction.
+template <class Pattern>
+using MatchResultsTypeFromPattern = MatchResultsType<Pattern::max_index>;
+
+}  // namespace spm
 
 constexpr uint32_t kExtractCompositeIdInIdx = 0;
 constexpr uint32_t kInsertObjectIdInIdx = 0;
@@ -2759,6 +3068,122 @@ FoldingRule ReassociateCommutiveBitwise(spv::Op op) {
   return ReassociateCommutiveOp();
 }
 
+// Cases handled:
+// (x ^ y) ^ y = x
+// y ^ (x ^ y) = x
+// (y ^ x) ^ y = x
+// y ^ (y ^ x) = x
+FoldingRule FoldXorXorCancellation() {
+  return [](IRContext* context, Instruction* inst,
+            const std::vector<const analysis::Constant*>& constants) {
+    assert(inst->opcode() == spv::Op::OpBitwiseXor);
+    using namespace spm;
+    using Pattern =
+        PM2_Asc<OpAny, ArgAny, Arg<0>,
+                PM2_Asc<Ops<spv::Op::OpBitwiseXor>, ArgAny, Arg<0>, Arg<1>>>;
+    MatchResultsTypeFromPattern<Pattern> match_results{};
+    if (Pattern::TryMatch(context, inst, match_results)) {
+      Instruction* x = std::get<1>(match_results);
+      assert(x);
+      inst->SetOpcode(spv::Op::OpCopyObject);
+      inst->SetInOperands({{SPV_OPERAND_TYPE_ID, {x->result_id()}}});
+      return true;
+    }
+    return false;
+  };
+}
+
+// What we really want is a rewriter to find xor chains...
+// Cases handled:
+// (x ^ a) ^ (x ^ b) = a ^ b
+// (a ^ x) ^ (x ^ b) = a ^ b
+// (x ^ a) ^ (b ^ x) = a ^ b
+// (a ^ x) ^ (b ^ x) = a ^ b
+FoldingRule FoldXorXorCancellation2() {
+  return [](IRContext* context, Instruction* inst,
+            const std::vector<const analysis::Constant*>& constants) {
+    assert(inst->opcode() == spv::Op::OpBitwiseXor);
+    using namespace spm;
+
+    // Can't handle all cases with PM2_Asc, due to it being greedy.
+    analysis::DefUseManager* def_use_mgr = context->get_def_use_mgr();
+    Instruction* lhs = def_use_mgr->GetDef(inst->GetSingleWordInOperand(0));
+    Instruction* rhs = def_use_mgr->GetDef(inst->GetSingleWordInOperand(1));
+    if (lhs->opcode() == spv::Op::OpBitwiseXor &&
+        rhs->opcode() == spv::Op::OpBitwiseXor) {
+      uint32_t lhs0 = lhs->GetSingleWordInOperand(0);
+      uint32_t lhs1 = lhs->GetSingleWordInOperand(1);
+      uint32_t rhs0 = rhs->GetSingleWordInOperand(0);
+      uint32_t rhs1 = rhs->GetSingleWordInOperand(1);
+
+      auto TryFold = [inst](uint32_t lhs_x, uint32_t rhs_x, uint32_t a,
+                            uint32_t b) {
+        if (lhs_x == rhs_x) {
+          inst->SetInOperands(
+              {{SPV_OPERAND_TYPE_ID, {a}}, {SPV_OPERAND_TYPE_ID, {b}}});
+          return true;
+        }
+        return false;
+      };
+
+      return (
+          TryFold(lhs0, rhs0, lhs1, rhs1) || TryFold(lhs1, rhs0, lhs0, rhs1) ||
+          TryFold(lhs0, rhs1, lhs1, rhs0) || TryFold(lhs1, rhs1, lhs0, rhs0));
+    }
+    return false;
+  };
+}
+
+// Cases handled:
+// x | (x & y) = x
+// x | (y & x) = x
+// (x & y) | x = x
+// (y & x) | x = x
+FoldingRule RedundantOrAnd() {
+  return [](IRContext* context, Instruction* inst,
+            const std::vector<const analysis::Constant*>& constants) {
+    assert(inst->opcode() == spv::Op::OpBitwiseOr);
+    using namespace spm;
+    using Pattern =
+        PM2_Asc<OpAny, ArgAny, Arg<0>,
+                PM2_Asc<Ops<spv::Op::OpBitwiseAnd>, ArgAny, Arg<0>, ArgAny>>;
+    MatchResultsTypeFromPattern<Pattern> match_results{};
+    if (Pattern::TryMatch(context, inst, match_results)) {
+      Instruction* x = std::get<0>(match_results);
+      assert(x);
+      inst->SetOpcode(spv::Op::OpCopyObject);
+      inst->SetInOperands({{SPV_OPERAND_TYPE_ID, {x->result_id()}}});
+      return true;
+    }
+    return false;
+  };
+}
+
+// Cases handled:
+// x & (x | y) = x
+// x & (y | x) = x
+// (x | y) & x = x
+// (y | x) & x = x
+FoldingRule RedundantAndOr() {
+  return [](IRContext* context, Instruction* inst,
+            const std::vector<const analysis::Constant*>& constants) {
+    assert(inst->opcode() == spv::Op::OpBitwiseAnd);
+    using namespace spm;
+    using Pattern =
+        PM2_Asc<OpAny, ArgAny, Arg<0>,
+                PM2_Asc<Ops<spv::Op::OpBitwiseOr>, ArgAny, Arg<0>, ArgAny>>;
+    MatchResultsTypeFromPattern<Pattern> match_results{};
+    if (Pattern::TryMatch(context, inst, match_results)) {
+      Instruction* x = std::get<0>(match_results);
+      assert(x);
+      inst->SetOpcode(spv::Op::OpCopyObject);
+      inst->SetInOperands({{SPV_OPERAND_TYPE_ID, {x->result_id()}}});
+      return true;
+    }
+    return false;
+  };
+}
+
 // Returns true if all elements in |c| are 1.
 bool IsAllInt1(const analysis::Constant* c) {
   if (auto composite = c->AsCompositeConstant()) {
@@ -3230,6 +3655,13 @@ void FoldingRules::AddFoldingRules() {
   rules_[spv::Op::OpISub].push_back(MergeSubNegateArithmetic());
   rules_[spv::Op::OpISub].push_back(MergeSubAddArithmetic());
   rules_[spv::Op::OpISub].push_back(MergeSubSubArithmetic());
+
+  rules_[spv::Op::OpBitwiseXor].push_back(FoldXorXorCancellation());
+  rules_[spv::Op::OpBitwiseXor].push_back(FoldXorXorCancellation2());
+
+  rules_[spv::Op::OpBitwiseOr].push_back(RedundantOrAnd());
+
+  rules_[spv::Op::OpBitwiseAnd].push_back(RedundantAndOr());
 
   rules_[spv::Op::OpPhi].push_back(RedundantPhi());
 
