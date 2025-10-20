@@ -38,6 +38,10 @@ class ReassociatePass : public Pass {
            IRContext::kAnalysisLoopAnalysis | IRContext::kAnalysisNameMap |
            IRContext::kAnalysisConstants | IRContext::kAnalysisTypes;
   }
+
+private:
+  bool ProcessInstructionsInBB(BasicBlock* bb);
+  bool ProcessInstructionsByType(spv::Op op, std::vector<Instruction*>& insts);
 };
 
 }  // namespace opt
