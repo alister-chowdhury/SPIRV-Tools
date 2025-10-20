@@ -645,6 +645,11 @@ Optimizer::PassToken CreateLoopPeelingPass();
 // Works best after LICM and local multi store elimination pass.
 Optimizer::PassToken CreateLoopUnswitchPass();
 
+// Create reassociate pass
+// TODO
+// 
+Optimizer::PassToken CreateReassociatePass();
+
 // Create global value numbering pass.
 // This pass will look for instructions where the same value is computed on all
 // paths leading to the instruction.  Those instructions are deleted.

@@ -569,6 +569,8 @@ static_library("spvtools_opt") {
     "source/opt/private_to_local_pass.h",
     "source/opt/propagator.cpp",
     "source/opt/propagator.h",
+    "source/opt/reassociate_pass.cpp",
+    "source/opt/reassociate_pass.h",
     "source/opt/reduce_load_size.cpp",
     "source/opt/reduce_load_size.h",
     "source/opt/redundancy_elimination.cpp",
