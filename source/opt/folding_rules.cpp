@@ -2759,6 +2759,40 @@ FoldingRule ReassociateCommutiveBitwise(spv::Op op) {
   return ReassociateCommutiveOp();
 }
 
+//  x & (... &  x & ...) = (... & x & ...)
+// ~x & (... &  x & ...) = 0
+//  x & (... & ~x & ...) = 0
+//  x | (... &  x & ...) = x
+FoldingRule RedundantAndChains() {
+  return [](IRContext* context, Instruction* inst,
+            const std::vector<const analysis::Constant*>& constants) {
+    assert((inst->opcode() == spv::Op::OpBitwiseAnd ||
+            inst->opcode() == spv::Op::OpBitwiseOr) &&
+           "Wrong opcode.");
+
+    analysis::DefUseManager* def_use_mgr = context->get_def_use_mgr();
+    uint32_t lhs_id = inst->GetSingleWordInOperand(0);
+    uint32_t rhs_id = inst->GetSingleWordInOperand(1);
+
+    //// x & x == x
+    //// x | x == x
+    //if (lhs_id == rhs_id) {
+    //  inst->SetOpcode(spv::Op::OpCopyObject);
+    //  inst->SetInOperands({{SPV_OPERAND_TYPE_ID, {lhs_id}}});
+    //  return true;
+    //}
+
+    Instruction* lhs = def_use_mgr->GetDef(lhs_id);
+    //Instruction* rhs = def_use_mgr->GetDef(rhs_id);
+
+  /*  auto FlattenTree = [](uint32_t cmp_op, spv::Op op) {
+      std::vector<Instruction*> stack;
+    };*/
+
+    return false;
+  };
+}
+
 // Returns true if all elements in |c| are 1.
 bool IsAllInt1(const analysis::Constant* c) {
   if (auto composite = c->AsCompositeConstant()) {
