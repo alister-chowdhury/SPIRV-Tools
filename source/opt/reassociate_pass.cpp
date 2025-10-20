@@ -14,6 +14,9 @@
 
 
 #include "reassociate_pass.h"
+#include "ir_builder.h"
+
+#include <algorithm>
 
 namespace spvtools {
 namespace opt {
@@ -71,81 +74,117 @@ bool ReassociatePass::ProcessInstructionsInBB(BasicBlock* bb) {
 
 
 bool ReassociatePass::ProcessInstructionsByType(spv::Op op,
-                                                std::vector<Instruction*>& insts) {
+                                                std::vector<Instruction*>& in_insts) {
 
   bool modified = false;
   analysis::DefUseManager* def_use_mgr = context()->get_def_use_mgr();
   analysis::ConstantManager* const_mgr = context()->get_constant_mgr();
 
-  // 1. Order operators so their id's are sorted.
-  //    This prevents emitting duplicate instructions.
-  //    e.g:
-  //      %28 = OpIAdd %uint %24 %27
-  //      %29 = OpIAdd %uint %27 %24
-  //    =>
-  //      %28 = OpIAdd %uint %27 %24
-  //      %29 = OpIAdd %uint %27 %24 <- kill
+  struct Subgraph
   {
-    std::unordered_map<uint64_t, Instruction*> args_to_inst;
-    auto iter = insts.begin();
-    while (iter < insts.end()) {
-      Instruction* inst = *iter;
+    std::vector<Instruction*> inputs;
+    std::vector<Instruction*> working_space;
+    Instruction* output;
+  };
+
+  std::unordered_set<Instruction*> intermediates;
+
+  {
+    for (Instruction* inst : in_insts) {
       Instruction* lhs = def_use_mgr->GetDef(inst->GetSingleWordInOperand(0));
       Instruction* rhs = def_use_mgr->GetDef(inst->GetSingleWordInOperand(1));
 
-      bool lhs_const = lhs->IsConstant();
-      bool rhs_const = rhs->IsConstant();
+      // Anything with more than one dep, or is fed into
+      // a different type of instruction, is considered
+      // an output.
+      bool is_output = false;
+      def_use_mgr->WhileEachUse(inst, [op, &is_output, num_children=0](Instruction* child, uint32_t) mutable {
+        is_output = (num_children++ != 0) || is_output;
+        is_output = is_output || (op != child->opcode());
+        return !is_output;
+      });
 
-      bool flip = false;
-      // Keep constants on the left
-      if (rhs_const == lhs_const) {
-        flip = lhs->result_id() < rhs->result_id();
-      }
-      else if (lhs_const) {
-        flip = true;
-      }
+      if (is_output) {
+        
+        Subgraph graph;
+        graph.output = inst;
+        auto Evaluate = [&](Instruction* node) {
+          std::vector<Instruction*> stack;
+          while (true) {
+            if (intermediates.find(node) != intermediates.end()) {
+              intermediates.erase(node);
+              graph.working_space.push_back(node);
+              stack.push_back(def_use_mgr->GetDef(node->GetSingleWordInOperand(0)));
+              node = def_use_mgr->GetDef(node->GetSingleWordInOperand(1));
+              continue;
+            }
+            graph.inputs.push_back(node);
+            if (!stack.empty()) {
+              node = stack.back();
+              stack.pop_back();
+              continue;
+            }
+            break;
+          }
+        };
+        Evaluate(lhs);
+        Evaluate(rhs);
 
-      if (flip) {
-        std::swap(lhs, rhs);
+        // Singular node, not interesting.
+        if (graph.working_space.empty()) {
+          continue;
+        }
+
+        std::sort(graph.inputs.begin(),
+          graph.inputs.end(),
+          [&](const Instruction* a, const Instruction* b) {
+          bool a_const = a->IsConstant();
+          bool b_const = b->IsConstant();
+          if (a_const != b_const) {
+            return a_const;
+          }
+          return a->result_id() < b->result_id();
+        });
+        
         modified = true;
-        inst->SetInOperands({{SPV_OPERAND_TYPE_ID, {lhs->result_id()}},
-                             {SPV_OPERAND_TYPE_ID, {rhs->result_id()}}});
-      }
+        //continue;
 
-      uint64_t hash = (uint64_t(lhs->result_id()) << 32) | rhs->result_id();
-      auto found = args_to_inst.find(hash);
-      if (found != args_to_inst.end()) {
-        modified = true;
-        context()->ReplaceAllUsesWith(inst->result_id(), found->second->result_id());
+        // And we'll create new, better children
+        // TODOOOO:
+        // REUSE RESULT_ID!!!
+        InstructionBuilder ir_builder(context(), inst);
+        uint32_t type = inst->type_id();
+        auto AddInto = [op, type, &ir_builder, context=context()](Instruction* a, Instruction* b) {
+          uint32_t result_id = context->TakeNextId();
+          std::unique_ptr<Instruction> inst(new Instruction(
+            context, op, type, result_id,
+            {{SPV_OPERAND_TYPE_ID, {a->result_id()}}, {SPV_OPERAND_TYPE_ID, {b->result_id()}}}));
+          Instruction* new_inst = ir_builder.AddInstruction(std::move(inst));
+          context->UpdateDefUse(new_inst);
+          return new_inst;
+        };
+
+        Instruction* last = AddInto(graph.inputs[0], graph.inputs[1]);
+        for (size_t i = 2; i < graph.inputs.size(); ++i) {
+          last = AddInto(last, graph.inputs[i]);
+        }
+        
+        context()->ReplaceAllUsesWith(inst->result_id(),
+                                      last->result_id());
+
+        // Destroy all previous children
+        for (Instruction* prev_inst : graph.working_space) {
+          context()->KillInst(prev_inst);
+        }
         context()->KillInst(inst);
-        iter = insts.erase(iter);
       }
       else {
-        if (flip) {
-          context()->AnalyzeUses(inst);
-        }
-        args_to_inst[hash] = inst;
-        ++iter;
+        intermediates.insert(inst);
       }
     }
+
   }
 
-  //std::unordered_set<Instruction*> known_constant_exprs;
-
-  //for (Instruction* inst : insts) {
-  //  Instruction* lhs = def_use_mgr->GetDef(inst->GetSingleWordInOperand(0));
-  //  Instruction* rhs = def_use_mgr->GetDef(inst->GetSingleWordInOperand(1));
-
-  //  bool lhs_const = lhs->IsConstant() || (known_constant_exprs.find(lhs) != known_constant_exprs.end());
-  //  bool rhs_const = rhs->IsConstant() || (known_constant_exprs.find(rhs) != known_constant_exprs.end());
-  //  if (lhs_const && rhs_const) {
-  //    known_constant_exprs.insert(inst);
-  //    continue;
-  //  }
-
-
-
-  //}
 
   return modified;
 
