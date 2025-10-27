@@ -166,6 +166,7 @@ bool ReassociatePass::ReassociateFP(BasicBlock* bb) {
 /////
 
 struct ReassocGraphFP {
+
   struct FPConstAccum {
     FPConstAccum& operator+=(const FPConstAccum& other) {
       assert(other.vals.size() == vals.size());
@@ -191,6 +192,13 @@ struct ReassocGraphFP {
       }
       return *this;
     }
+    FPConstAccum& operator*=(double x) {
+      size_t n = vals.size();
+      for (size_t i = 0; i < n; ++i) {
+        vals[i] *= x;
+      }
+      return *this;
+    }
     FPConstAccum& operator/=(const FPConstAccum& other) {
       assert(other.vals.size() == vals.size());
       size_t n = vals.size();
@@ -203,6 +211,15 @@ struct ReassocGraphFP {
     bool AllZero() const {
       for (const double v : vals) {
         if (v != 0.0) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    bool AllOne() const {
+      for (const double v : vals) {
+        if (v != 1.0) {
           return false;
         }
       }
@@ -237,6 +254,7 @@ struct ReassocGraphFP {
 
     void AddInput(FPReassocNode* inp, int32_t num);
     void AccumConstant(FPReassocNode* inp, int32_t num);
+    void ConvertAddsToMuls(ReassocGraphFP& parent);
 
     // Inputs to this node and their count
     std::unordered_map<FPReassocNode*, int32_t> inputs;
@@ -382,6 +400,45 @@ void ReassocGraphFP::FPReassocNode::AddInput(FPReassocNode* inp, int32_t num) {
     } else {
       flags &= ~kConstant;
       inputs[inp] = num;
+    }
+  }
+}
+
+void ReassocGraphFP::FPReassocNode::ConvertAddsToMuls(ReassocGraphFP& parent) {
+  assert(node_type != NodeType::kInvalid);
+  if (node_type == NodeType::kExternal) {
+    return;
+  }
+
+  bool could_use_folding = false;
+  for (auto& inp : inputs) {
+    inp.first->ConvertAddsToMuls(parent);
+    flags |= (inp.first->flags & kBeenOptimised);
+    if (node_type == NodeType::kAdd) {
+      if ((inp.second <= -3) || (inp.second >= 3)) {
+        could_use_folding = true;
+      }
+    }
+  }
+
+  if (could_use_folding) {
+    flags |= kBeenOptimised;
+    std::vector<FPReassocNode*> new_nodes;
+    for (auto it = inputs.begin(); it != inputs.end();) {
+      if ((it->second <= -3) || (it->second >= 3)) {
+        FPReassocNode* new_node = parent.AllocateNode(NodeType::kMul);
+        new_node->flags &= ~kDefaultConstantAccum;
+        new_node->const_accum *= double(it->second);
+        new_node->AddInput(it->first, 1);
+        new_nodes.push_back(new_node);
+        it = inputs.erase(it);
+      }
+      else {
+        ++it;
+      }
+    }
+    for (FPReassocNode* new_node : new_nodes) {
+      AddInput(new_node, 1);
     }
   }
 }
@@ -557,8 +614,7 @@ bool ReassociatePass::ReassociateFPGraph(Instruction* root,
   }
 
   ReassocGraphFP::FPReassocNode* root_node = fpgraph.GetUserExternal(root);
-
-  // Convert adds to muls
+  root_node->ConvertAddsToMuls(fpgraph);
   // Run factorisation pass here
 
   bool modified = false;
