@@ -156,11 +156,6 @@ Options (in lexicographical order):)",
                Does propagation of memory references when an array is a copy of
                another.  It will only propagate an array if the source is never
                written to, and the only store to the target is the copy.)");
-  
-  printf(R"(
-  --reassociate
-               TODO)");
-  
   printf(R"(
   --replace-desc-array-access-using-var-index
                Replaces accesses to descriptor arrays based on a variable index
@@ -427,6 +422,9 @@ Options (in lexicographical order):)",
   --private-to-local
                Change the scope of private variables that are used in a single
                function to that function.)");
+  printf(R"(
+  --reassociate
+               TODO)");
   printf(R"(
   --reduce-load-size[=<threshold>]
                Replaces loads of composite objects where not every component is
