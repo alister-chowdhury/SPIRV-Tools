@@ -41,7 +41,8 @@ class ReassociatePass : public Pass {
 
 private:
   bool ProcessInstructionsInBB(BasicBlock* bb);
-  bool ProcessInstructionsByType(spv::Op op, std::vector<Instruction*>& insts);
+  bool ReassociateFP(BasicBlock* bb);
+  bool ReassociateFPGraph(Instruction* root, std::vector<Instruction*>&& graph);
 };
 
 }  // namespace opt
