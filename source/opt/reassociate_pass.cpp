@@ -165,110 +165,129 @@ bool ReassociatePass::ReassociateFP(BasicBlock* bb) {
 
 /////
 
+
 struct ReassocGraphFP {
 
   struct FPConstAccum {
-    FPConstAccum& operator+=(const FPConstAccum& other) {
-      assert(other.vals.size() == vals.size());
-      size_t n = vals.size();
-      for (size_t i = 0; i < n; ++i) {
-        vals[i] += other.vals[i];
-      }
-      return *this;
-    }
-    FPConstAccum& operator-=(const FPConstAccum& other) {
-      assert(other.vals.size() == vals.size());
-      size_t n = vals.size();
-      for (size_t i = 0; i < n; ++i) {
-        vals[i] -= other.vals[i];
-      }
-      return *this;
-    }
-    FPConstAccum& operator*=(const FPConstAccum& other) {
-      assert(other.vals.size() == vals.size());
-      size_t n = vals.size();
-      for (size_t i = 0; i < n; ++i) {
-        vals[i] *= other.vals[i];
-      }
-      return *this;
-    }
-    FPConstAccum& operator*=(double x) {
-      size_t n = vals.size();
-      for (size_t i = 0; i < n; ++i) {
-        vals[i] *= x;
-      }
-      return *this;
-    }
-    FPConstAccum& operator/=(const FPConstAccum& other) {
-      assert(other.vals.size() == vals.size());
-      size_t n = vals.size();
-      for (size_t i = 0; i < n; ++i) {
-        vals[i] /= other.vals[i];
-      }
-      return *this;
+#define CONST_ACCUM_OP_EQ_VEC(op)                          \
+    FPConstAccum& operator op(const FPConstAccum& other) { \
+      assert(other.vals.size() == vals.size());            \
+      size_t n = vals.size();                              \
+      for (size_t i = 0; i < n; ++i) {                     \
+        vals[i] op other.vals[i];                          \
+      }                                                    \
+      return *this;                                        \
     }
 
-    bool AllZero() const {
-      for (const double v : vals) {
-        if (v != 0.0) {
-          return false;
-        }
-      }
-      return true;
+#define CONST_ACCUM_OP_CMP_VEC(op)                      \
+    bool operator op(const FPConstAccum& other) const { \
+      assert(other.vals.size() == vals.size());         \
+      size_t n = vals.size();                           \
+      for (size_t i = 0; i < n; ++i) {                  \
+        if (!(vals[i] op other.vals[i])) {              \
+          return false;                                 \
+        }                                               \
+      }                                                 \
+      return true;                                      \
     }
 
-    bool AllOne() const {
-      for (const double v : vals) {
-        if (v != 1.0) {
-          return false;
-        }
-      }
-      return true;
+#define CONST_ACCUM_OP_EQ_SCALAR(op)          \
+    FPConstAccum& operator op(double value) { \
+      for (double& v : vals) {                \
+        v op value;                           \
+      }                                       \
+      return *this;                           \
+    }
+
+#define CONST_ACCUM_OP_CMP_SCALAR(op)      \
+    bool operator op(double value) const { \
+      for (const double& v : vals) {       \
+        if (!(v op value)) return false;   \
+      }                                    \
+      return true;                         \
+    }
+
+    CONST_ACCUM_OP_EQ_VEC(+=)
+    CONST_ACCUM_OP_EQ_VEC(-=)
+    CONST_ACCUM_OP_EQ_VEC(*=)
+    CONST_ACCUM_OP_EQ_VEC(/=)
+    CONST_ACCUM_OP_EQ_VEC(=)
+    CONST_ACCUM_OP_CMP_VEC(==)
+    CONST_ACCUM_OP_CMP_VEC(!=)
+
+    CONST_ACCUM_OP_EQ_SCALAR(+=)
+    CONST_ACCUM_OP_EQ_SCALAR(-=)
+    CONST_ACCUM_OP_EQ_SCALAR(*=)
+    CONST_ACCUM_OP_EQ_SCALAR(/=)
+    CONST_ACCUM_OP_EQ_SCALAR(=)
+    CONST_ACCUM_OP_CMP_SCALAR(==)
+    CONST_ACCUM_OP_CMP_SCALAR(!=)
+
+#undef CONST_ACCUM_OP_EQ_VEC
+#undef CONST_ACCUM_OP_EQ_SCALAR
+
+    bool IsZero() const {
+      return *this == 0.0;
+    }
+
+    bool IsOne() const {
+      return *this == 1.0;
+    }
+
+    void SetToDefaultMul() {
+      *this = 1.0;
+    }
+
+    void SetToDefaultAdd() {
+      *this = 0.0;
+    }
+
+    bool IsDefaultMul() const {
+      return IsOne();
+    }
+
+    bool IsDefaultAdd() const {
+      return IsZero();
     }
 
     std::vector<double> vals;
   };
 
-  struct FPReassocNode {
-    enum class NodeType {
-      kInvalid,
-      kExternal,
-      kAdd,  // add / sub
-      kMul   // mul / div
-    };
+  enum class NodeType {
+    kInvalid,
+    kExternal,
+    kAdd,  // add / sub
+    kMul   // mul / div
+  };
 
+  struct FPReassocNode {
     using FlagsType = uint32_t;
     enum Flags : FlagsType {
       kNone = 0,
-      kConstant = (1u << 0),
-      kMulZero = (1u << 1),
-      kDefaultConstantAccum = (1u << 2),
-      kUserExternal = (1u << 3),
-      kBeenOptimised = (1u << 4)
+      kUserExternal = (1u << 0),
+      kConstant = (1u << 1),
+      kValidHash = (1u << 2)
     };
 
     NodeType node_type = NodeType::kInvalid;
     FlagsType flags = kNone;
     uint32_t result_id = UINT32_MAX;
+    size_t Hash{};
     FPConstAccum const_accum{};
 
-    void AddInput(FPReassocNode* inp, int32_t num);
-    void AccumConstant(FPReassocNode* inp, int32_t num);
-    void ConvertAddsToMuls(ReassocGraphFP& parent);
+    void Rehash();
 
     // Inputs to this node and their count
-    std::unordered_map<FPReassocNode*, int32_t> inputs;
+    std::map<FPReassocNode*, int32_t> inputs;
   };
 
   ReassocGraphFP(analysis::Type* type_, analysis::TypeManager* type_mgr_,
                  analysis::DefUseManager* def_use_mgr_,
-                 analysis::ConstantManager* const_mgr_,
-                 const ValueNumberTable* vn_table_)
+                 analysis::ConstantManager* const_mgr_)
       : type(type_),
         type_mgr(type_mgr_),
         def_use_mgr(def_use_mgr_),
-        const_mgr(const_mgr_),
-        vn_table(vn_table_) {
+        const_mgr(const_mgr_) {
 
     uint32_t default_const_size = 1;
     if (analysis::Vector* vec_type = type->AsVector()) {
@@ -286,21 +305,11 @@ struct ReassocGraphFP {
     default_mul_accum.vals.resize(default_const_size, 1.0);
   }
 
-  FPReassocNode* AllocateNode(FPReassocNode::NodeType node_type);
-  FPReassocNode* CreateNode(Instruction* inst);
-  FPReassocNode* FindOrCreateUserExternal(Instruction* inst);
-  FPReassocNode* FindOrCreateUserExternal(uint32_t inst_id) {
-    return FindOrCreateUserExternal(def_use_mgr->GetDef(inst_id));
-  }
-  FPReassocNode* GetUserExternal(Instruction* inst) {
-    return user_external.at(inst);
-  }
 
   analysis::Type* type;
   analysis::TypeManager* type_mgr;
   analysis::DefUseManager* def_use_mgr;
   analysis::ConstantManager* const_mgr;
-  const ValueNumberTable* vn_table;
 
   bool is_vector = false;
   uint32_t width = 0;
@@ -311,317 +320,33 @@ struct ReassocGraphFP {
   std::vector<std::unique_ptr<FPReassocNode>> storage;
 };
 
-void ReassocGraphFP::FPReassocNode::AccumConstant(FPReassocNode* inp,
-                                                  int32_t num) {
-  assert((node_type == NodeType::kAdd) || (node_type == NodeType::kMul));
-
-  // Don't bother doing a * 1, or + 0
-  if ((inp->node_type == node_type) && (inp->flags & kDefaultConstantAccum)) {
+void ReassocGraphFP::FPReassocNode::Rehash() {
+  if (Flags & kValidHash) {
     return;
   }
-
-  // If this is the first constant we've consumed,
-  // we've probably not done any extra optimisations.
-  // However, if it's the second, then we've folded
-  // something.
-  if (flags & kDefaultConstantAccum) {
-    flags &= ~kDefaultConstantAccum;
-  } else {
-    flags |= kBeenOptimised;
-  }
-
-  if (node_type == NodeType::kMul) {
-    if (num > 0) {
-      for (int32_t i = 0; i < num; ++i) {
-        const_accum *= inp->const_accum;
-      }
-    } else {
-      for (int32_t i = 0; i > num; --i) {
-        const_accum /= inp->const_accum;
-      }
-    }
-    // Mul by zero, clear everything!
-    if (const_accum.AllZero()) {
-      flags |= kMulZero;
-      if (!inputs.empty()) {
-        flags |= kConstant | kBeenOptimised;
-        inputs.clear();
-      }
-    }
-  } else if (node_type == NodeType::kAdd) {
-    if (num > 0) {
-      for (int32_t i = 0; i < num; ++i) {
-        const_accum += inp->const_accum;
-      }
-    } else {
-      for (int32_t i = 0; i > num; --i) {
-        const_accum -= inp->const_accum;
-      }
-    }
-  }
 }
 
-void ReassocGraphFP::FPReassocNode::AddInput(FPReassocNode* inp, int32_t num) {
-  assert((node_type == NodeType::kAdd) || (node_type == NodeType::kMul));
-  flags |= (inp->flags & kBeenOptimised);
-
-  if (num == 0) {
-    return;
-  }
-  if (flags & kMulZero) {
-    flags |= kBeenOptimised;
-    return;
-  }
-  if ((inp->flags & kConstant)) {
-    AccumConstant(inp, num);
-    return;
-  }
-  if (inp->node_type == node_type) {
-    AccumConstant(inp, num);
-    for (auto kv : inp->inputs) {
-      AddInput(kv.first, kv.second * num);
-    }
-  } else {
-    auto found = inputs.find(inp);
-    if (found != inputs.end()) {
-      int32_t old_v = found->second;
-      found->second += num;
-      // Some amount of folding has taken place
-      if ((old_v > 0) && (num < 0)) {
-        flags |= kBeenOptimised;
-      }
-      // Totally cancelled out
-      if (found->second == 0) {
-        inputs.erase(found);
-        if (inputs.empty()) {
-          flags |= kConstant;
-        }
-      }
-    } else {
-      flags &= ~kConstant;
-      inputs[inp] = num;
-    }
-  }
-}
-
-void ReassocGraphFP::FPReassocNode::ConvertAddsToMuls(ReassocGraphFP& parent) {
-  assert(node_type != NodeType::kInvalid);
-  if (node_type == NodeType::kExternal) {
-    return;
-  }
-
-  bool could_use_folding = false;
-  for (auto& inp : inputs) {
-    inp.first->ConvertAddsToMuls(parent);
-    flags |= (inp.first->flags & kBeenOptimised);
-    if (node_type == NodeType::kAdd) {
-      if ((inp.second <= -3) || (inp.second >= 3)) {
-        could_use_folding = true;
-      }
-    }
-  }
-
-  if (could_use_folding) {
-    flags |= kBeenOptimised;
-    std::vector<FPReassocNode*> new_nodes;
-    for (auto it = inputs.begin(); it != inputs.end();) {
-      if ((it->second <= -3) || (it->second >= 3)) {
-        FPReassocNode* new_node = parent.AllocateNode(NodeType::kMul);
-        new_node->flags &= ~kDefaultConstantAccum;
-        new_node->const_accum *= double(it->second);
-        new_node->AddInput(it->first, 1);
-        new_nodes.push_back(new_node);
-        it = inputs.erase(it);
-      }
-      else {
-        ++it;
-      }
-    }
-    for (FPReassocNode* new_node : new_nodes) {
-      AddInput(new_node, 1);
-    }
-  }
-}
-
-ReassocGraphFP::FPReassocNode* ReassocGraphFP::AllocateNode(
-    FPReassocNode::NodeType node_type) {
-  FPReassocNode* new_node = new FPReassocNode{};
-  new_node->node_type = node_type;
-  storage.emplace_back(new_node);
-  assert(node_type != FPReassocNode::NodeType::kInvalid);
-  if (node_type == FPReassocNode::NodeType::kAdd) {
-    new_node->flags =
-        FPReassocNode::kDefaultConstantAccum | FPReassocNode::kConstant;
-    new_node->const_accum = default_add_accum;
-  }
-  if (node_type == FPReassocNode::NodeType::kMul) {
-    new_node->flags =
-        FPReassocNode::kDefaultConstantAccum | FPReassocNode::kConstant;
-    new_node->const_accum = default_mul_accum;
-  }
-  return new_node;
-}
-
-ReassocGraphFP::FPReassocNode* ReassocGraphFP::CreateNode(Instruction* inst) {
-  assert(user_external.find(inst) == user_external.end());
-
-  FPReassocNode::NodeType node_type = FPReassocNode::NodeType::kInvalid;
-  utils::SmallVector<std::pair<FPReassocNode*, int32_t>, 2> inputs;
-
-  switch (inst->opcode()) {
-    case spv::Op::OpFDiv: {
-      node_type = FPReassocNode::NodeType::kMul;
-      FPReassocNode* lhs =
-          FindOrCreateUserExternal(inst->GetSingleWordInOperand(0));
-      FPReassocNode* rhs =
-          FindOrCreateUserExternal(inst->GetSingleWordInOperand(1));
-      inputs.push_back({lhs, 1});
-      inputs.push_back({rhs, -1});
-      break;
-    }
-    case spv::Op::OpFMul: {
-      node_type = FPReassocNode::NodeType::kMul;
-      FPReassocNode* lhs =
-          FindOrCreateUserExternal(inst->GetSingleWordInOperand(0));
-      FPReassocNode* rhs =
-          FindOrCreateUserExternal(inst->GetSingleWordInOperand(1));
-      inputs.push_back({lhs, 1});
-      inputs.push_back({rhs, 1});
-      break;
-    }
-    case spv::Op::OpFSub: {
-      node_type = FPReassocNode::NodeType::kAdd;
-      FPReassocNode* lhs =
-          FindOrCreateUserExternal(inst->GetSingleWordInOperand(0));
-      FPReassocNode* rhs =
-          FindOrCreateUserExternal(inst->GetSingleWordInOperand(1));
-      inputs.push_back({lhs, 1});
-      inputs.push_back({rhs, -1});
-      break;
-    }
-    case spv::Op::OpFAdd: {
-      node_type = FPReassocNode::NodeType::kAdd;
-      FPReassocNode* lhs =
-          FindOrCreateUserExternal(inst->GetSingleWordInOperand(0));
-      FPReassocNode* rhs =
-          FindOrCreateUserExternal(inst->GetSingleWordInOperand(1));
-      inputs.push_back({lhs, 1});
-      inputs.push_back({rhs, 1});
-      break;
-    }
-    case spv::Op::OpFNegate: {
-      node_type = FPReassocNode::NodeType::kAdd;
-      FPReassocNode* lhs =
-          FindOrCreateUserExternal(inst->GetSingleWordInOperand(0));
-      inputs.push_back({lhs, -1});
-      break;
-    }
-    default:
-      assert(false);
-      break;
-  }
-
-  FPReassocNode* new_node = AllocateNode(node_type);
-  user_external[inst] = new_node;
-  new_node->result_id = inst->result_id();
-  new_node->flags |= FPReassocNode::kUserExternal;
-
-  for (const auto& p : inputs) {
-    new_node->AddInput(p.first, p.second);
-  }
-
-  return new_node;
-}
-
-ReassocGraphFP::FPReassocNode* ReassocGraphFP::FindOrCreateUserExternal(
-    Instruction* inst) {
-  auto found = user_external.find(inst);
-  if (found != user_external.end()) {
-    return found->second;
-  }
-  FPReassocNode* new_node = AllocateNode(FPReassocNode::NodeType::kExternal);
-  user_external[inst] = new_node;
-  new_node->result_id = inst->result_id();
-  new_node->flags = FPReassocNode::kUserExternal;
-  if (inst->IsConstant()) {
-    // If anything seems off, ignore that this instruction was
-    // reported as constant and pretend it isn't.
-    if (type_mgr->GetType(inst->type_id()) == type) {
-      new_node->const_accum.vals.resize(default_add_accum.vals.size(), 0.0);
-      if (const analysis::Constant* c =
-              const_mgr->FindDeclaredConstant(inst->result_id())) {
-        if (c->AsNullConstant()) {
-          new_node->flags |= FPReassocNode::kConstant;
-        } else if (!is_vector) {
-          if (const analysis::FloatConstant* fc = c->AsFloatConstant()) {
-            if (width == 32) {
-              new_node->flags |= FPReassocNode::kConstant;
-              new_node->const_accum.vals[0] = (double)fc->GetFloat();
-            } else {
-              new_node->flags |= FPReassocNode::kConstant;
-              new_node->const_accum.vals[0] = fc->GetDouble();
-            }
-          }
-        }
-      }
-      if (is_vector) {
-        bool ok = true;
-        int32_t write_back = 0;
-        inst->ForEachInId([&](uint32_t* id) {
-          if (write_back >= default_add_accum.vals.size()) {
-            return;
-          }
-          const analysis::Constant* const_op =
-              const_mgr->FindDeclaredConstant(*id);
-          if (!const_op) {
-            ok = false;
-            return;
-          }
-          if (const_op->AsNullConstant()) {
-            ++write_back;
-            return;
-          }
-          const analysis::FloatConstant* const_fp = const_op->AsFloatConstant();
-          if (!const_fp) {
-            ok = false;
-            return;
-          }
-          if (width == 32) {
-            new_node->const_accum.vals[write_back++] =
-                (double)const_fp->GetFloat();
-          } else {
-            new_node->const_accum.vals[write_back++] = const_fp->GetDouble();
-          }
-        });
-        if (ok) {
-          new_node->flags |= FPReassocNode::kConstant;
-        }
-      }
-    }
-  }
-  return new_node;
-}
 
 bool ReassociatePass::ReassociateFPGraph(Instruction* root,
                                          std::vector<Instruction*>&& graph) {
   analysis::Type* type = context()->get_type_mgr()->GetType(root->type_id());
   ReassocGraphFP fpgraph(
       type, context()->get_type_mgr(), context()->get_def_use_mgr(),
-      context()->get_constant_mgr(), context()->GetValueNumberTable());
+      context()->get_constant_mgr());
 
-  for (Instruction* inst : graph) {
-    fpgraph.CreateNode(inst);
-  }
+  //for (Instruction* inst : graph) {
+  //  fpgraph.CreateNode(inst);
+  //}
 
-  ReassocGraphFP::FPReassocNode* root_node = fpgraph.GetUserExternal(root);
-  root_node->ConvertAddsToMuls(fpgraph);
-  // Run factorisation pass here
+  //ReassocGraphFP::FPReassocNode* root_node = fpgraph.GetUserExternal(root);
+  //root_node->ConvertAddsToMuls(fpgraph);
+  //// Run factorisation pass here
 
   bool modified = false;
-  if ((root_node->flags & ReassocGraphFP::FPReassocNode::kBeenOptimised)) {
-    modified = true;
+  //if ((root_node->flags & ReassocGraphFP::FPReassocNode::kBeenOptimised)) {
+  //  modified = true;
 
-  }
+  //}
   return modified;
 }
 
