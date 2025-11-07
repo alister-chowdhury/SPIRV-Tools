@@ -43,18 +43,6 @@ struct FPConstAccum {
     return *this;                                         \
   }
 
-#define CONST_ACCUM_OP_CMP_VEC(op)                    \
-  bool operator op(const FPConstAccum& other) const { \
-    assert(other.vals.size() == vals.size());         \
-    size_t n = vals.size();                           \
-    for (size_t i = 0; i < n; ++i) {                  \
-      if (!(vals[i] op other.vals[i])) {              \
-        return false;                                 \
-      }                                               \
-    }                                                 \
-    return true;                                      \
-  }
-
 #define CONST_ACCUM_OP_EQ_SCALAR(op)        \
   FPConstAccum& operator op(double value) { \
     for (double& v : vals) {                \
@@ -63,28 +51,16 @@ struct FPConstAccum {
     return *this;                           \
   }
 
-#define CONST_ACCUM_OP_CMP_SCALAR(op)    \
-  bool operator op(double value) const { \
-    for (const double& v : vals) {       \
-      if (!(v op value)) return false;   \
-    }                                    \
-    return true;                         \
-  }
-
   CONST_ACCUM_OP_EQ_VEC(+=)
   CONST_ACCUM_OP_EQ_VEC(-=)
   CONST_ACCUM_OP_EQ_VEC(*=)
   CONST_ACCUM_OP_EQ_VEC(/=)
-  CONST_ACCUM_OP_CMP_VEC(==)
-  CONST_ACCUM_OP_CMP_VEC(!=)
 
   CONST_ACCUM_OP_EQ_SCALAR(+=)
   CONST_ACCUM_OP_EQ_SCALAR(-=)
   CONST_ACCUM_OP_EQ_SCALAR(*=)
   CONST_ACCUM_OP_EQ_SCALAR(/=)
   CONST_ACCUM_OP_EQ_SCALAR(=)
-  CONST_ACCUM_OP_CMP_SCALAR(==)
-  CONST_ACCUM_OP_CMP_SCALAR(!=)
 
 #undef CONST_ACCUM_OP_EQ_VEC
 #undef CONST_ACCUM_OP_EQ_SCALAR
@@ -93,6 +69,27 @@ struct FPConstAccum {
     vals = other.vals;
     return *this;
   }
+
+  bool operator==(const FPConstAccum& other) const {
+    assert(other.vals.size() == vals.size());
+    size_t n = vals.size();
+    for (size_t i = 0; i < n; ++i) {
+      if (vals[i] != other.vals[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool operator!=(const FPConstAccum& other) const { return !(*this == other); }
+
+  bool operator==(double value) const {
+    for (const double& v : vals) {
+      if (v != value) return false;
+    }
+    return true;
+  }
+  bool operator!=(double value) const { return !(*this == value); }
 
   bool IsZero() const { return *this == 0.0; }
   bool IsOne() const { return *this == 1.0; }
@@ -131,7 +128,7 @@ struct FPNode {
     size_t operator()(const InputsType& inputs) const {
       size_t hash = std::hash<size_t>{}(inputs.size());
       for (const auto& inp : inputs) {
-        hash = utils::hash_combine(hash, inp.first, inp.second);
+        hash = utils::hash_combine(hash, inp.first->id, inp.second);
       }
       return hash;
     }
@@ -261,7 +258,7 @@ void FPNode::SimplifyInputs() {
 }
 
 struct ReassocGraphFP {
-  ReassocGraphFP(analysis::Type* type_, analysis::TypeManager* type_mgr_,
+  ReassocGraphFP(analysis::Type* type_,
                  analysis::DefUseManager* def_use_mgr_,
                  analysis::ConstantManager* const_mgr_);
 
@@ -271,26 +268,44 @@ struct ReassocGraphFP {
   const FPNode* AddNode(FPNode&& node);
   void PrintNode(std::ostream& output, const FPNode* node, int32_t indent = 0);
 
+  // Helpers for constucting nodes
+  FPNode Mul(const FPConstAccum& const_accum, const FPNode::InputsType& inputs) const;
+  FPNode Mul(const FPNode::InputsType& inputs) const;
+  FPNode Mul() const {
+    FPNode new_desc;
+    new_desc.node_type = FPNode::kMul;
+    new_desc.const_accum = default_mul_accum();
+    return new_desc;
+  }
+  FPNode Add(const FPConstAccum& const_accum, const FPNode::InputsType& inputs) const;
+  FPNode Add(const FPNode::InputsType& inputs) const;
+  FPNode Add() const {
+    FPNode new_desc;
+    new_desc.node_type = FPNode::kAdd;
+    new_desc.const_accum = default_add_accum();
+    return new_desc;
+  }
+
   analysis::Type* type;
-  analysis::TypeManager* type_mgr;
   analysis::DefUseManager* def_use_mgr;
   analysis::ConstantManager* const_mgr;
 
   bool is_vector = false;
   uint32_t width = 0;
-  FPConstAccum default_add_accum;
-  FPConstAccum default_mul_accum;
+  const FPConstAccum& default_add_accum() const { return default_zero_accum;}
+  const FPConstAccum& default_mul_accum() const { return default_one_accum;}
 
+  FPConstAccum default_zero_accum;
+  FPConstAccum default_one_accum;
+  
   std::unordered_map<Instruction*, const FPNode*> instr_to_node;
   std::unordered_set<FPNode, FPNode::Hash> storage;
 };
 
 ReassocGraphFP::ReassocGraphFP(analysis::Type* type_,
-                               analysis::TypeManager* type_mgr_,
                                analysis::DefUseManager* def_use_mgr_,
                                analysis::ConstantManager* const_mgr_)
     : type(type_),
-      type_mgr(type_mgr_),
       def_use_mgr(def_use_mgr_),
       const_mgr(const_mgr_) {
   uint32_t default_const_size = 1;
@@ -305,8 +320,8 @@ ReassocGraphFP::ReassocGraphFP(analysis::Type* type_,
     width = float_type->width();
   }
   assert((width == 32) || (width == 64));
-  default_add_accum.vals.resize(default_const_size, 0.0);
-  default_mul_accum.vals.resize(default_const_size, 1.0);
+  default_zero_accum.vals.resize(default_const_size, 0.0);
+  default_one_accum.vals.resize(default_const_size, 1.0);
 }
 
 const FPNode* ReassocGraphFP::AddNode(FPNode&& node) {
@@ -335,7 +350,7 @@ const FPNode* ReassocGraphFP::FindInstructionOrCreateExternal(
 
   if (inst->IsConstant()) {
     bool fetched_ok = false;
-    FPConstAccum const_values = default_add_accum;
+    FPConstAccum const_values = default_add_accum();
 
     const analysis::Constant* c =
         const_mgr->FindDeclaredConstant(inst->result_id());
@@ -392,31 +407,31 @@ const FPNode* ReassocGraphFP::AddInstruction(Instruction* inst) {
   switch (inst->opcode()) {
     case spv::Op::OpFDiv:
       new_node_desc.node_type = FPNode::kMul;
-      new_node_desc.const_accum = default_mul_accum;
+      new_node_desc.const_accum = default_mul_accum();
       new_node_desc.AddInput(ResolveInstArg(0), 1);
       new_node_desc.AddInput(ResolveInstArg(1), -1);
       break;
     case spv::Op::OpFMul:
       new_node_desc.node_type = FPNode::kMul;
-      new_node_desc.const_accum = default_mul_accum;
+      new_node_desc.const_accum = default_mul_accum();
       new_node_desc.AddInput(ResolveInstArg(0), 1);
       new_node_desc.AddInput(ResolveInstArg(1), 1);
       break;
     case spv::Op::OpFSub:
       new_node_desc.node_type = FPNode::kAdd;
-      new_node_desc.const_accum = default_add_accum;
+      new_node_desc.const_accum = default_add_accum();
       new_node_desc.AddInput(ResolveInstArg(0), 1);
       new_node_desc.AddInput(ResolveInstArg(1), -1);
       break;
     case spv::Op::OpFAdd:
       new_node_desc.node_type = FPNode::kAdd;
-      new_node_desc.const_accum = default_add_accum;
+      new_node_desc.const_accum = default_add_accum();
       new_node_desc.AddInput(ResolveInstArg(0), 1);
       new_node_desc.AddInput(ResolveInstArg(1), 1);
       break;
     case spv::Op::OpFNegate:
       new_node_desc.node_type = FPNode::kAdd;
-      new_node_desc.const_accum = default_add_accum;
+      new_node_desc.const_accum = default_add_accum();
       new_node_desc.AddInput(ResolveInstArg(0), -1);
       break;
     default:
@@ -427,6 +442,38 @@ const FPNode* ReassocGraphFP::AddInstruction(Instruction* inst) {
   const FPNode* new_node = AddNode(std::move(new_node_desc));
   instr_to_node[inst] = new_node;
   return new_node;
+}
+
+FPNode ReassocGraphFP::Mul(const FPConstAccum& const_accum, const FPNode::InputsType& inputs) const {
+  FPNode new_desc;
+  new_desc.node_type = FPNode::kMul;
+  new_desc.const_accum = const_accum;
+  new_desc.inputs = inputs;
+  return new_desc;
+}
+
+FPNode ReassocGraphFP::Mul(const FPNode::InputsType& inputs) const {
+  FPNode new_desc;
+  new_desc.node_type = FPNode::kMul;
+  new_desc.const_accum = default_mul_accum();
+  new_desc.inputs = inputs;
+  return new_desc;
+}
+
+FPNode ReassocGraphFP::Add(const FPConstAccum& const_accum, const FPNode::InputsType& inputs) const {
+  FPNode new_desc;
+  new_desc.node_type = FPNode::kAdd;
+  new_desc.const_accum = const_accum;
+  new_desc.inputs = inputs;
+  return new_desc;
+}
+
+FPNode ReassocGraphFP::Add(const FPNode::InputsType& inputs) const {
+  FPNode new_desc;
+  new_desc.node_type = FPNode::kAdd;
+  new_desc.const_accum = default_add_accum();
+  new_desc.inputs = inputs;
+  return new_desc;
 }
 
 void ReassocGraphFP::PrintNode(std::ostream& output, const FPNode* node,
@@ -487,7 +534,7 @@ void ReassocGraphFP::PrintNode(std::ostream& output, const FPNode* node,
     int32_t indent_child = indent + 2;
     for (const auto& c : node->inputs) {
       if (c.second != 1) {
-        output << indentation << "        " << c.second << "x\n";
+        output << indentation << "        x" << c.second << "x\n";
       }
       PrintNode(output, c.first, indent_child);
       output << ",\n";
@@ -508,99 +555,278 @@ void ReassocGraphFP::PrintNode(std::ostream& output, const FPNode* node,
 //  (3 * a) + (2 * a)           => 5 * a
 //  (3 * a) + (3 * b) + (3 * c) => 3 * (a + b + c)
 //  (3 * a) + (-3 * a)          => 0
-static const FPNode* MergeAddMulInputs(ReassocGraphFP& graph, const FPNode* node) {
+//
+//  TODO on the mul side:
+//  (3 * (10 + 3 * (a + b)))  => 30 + 9 * (a + b)
+void MergeAddMulInputs2(ReassocGraphFP& graph, FPNode& new_desc) {
+
+  // Once again, something funky is going on here.
+
+  if (new_desc.node_type != FPNode::kAdd) {
+    return;
+  }
+
+  if (new_desc.inputs.size() < 2) {
+    return;
+  }
+
+  const FPConstAccum& zero_accum = graph.default_zero_accum;
+
+  using SharedInputs = std::unordered_map<FPNode::InputsType, FPConstAccum,
+                                          FPNode::InputsHasher>;
+  using SharedConstants =
+      std::unordered_map<FPConstAccum, std::vector<FPNode::InputsType>,
+                         FPConstAccum::Hash>;
+
+  SharedInputs shared_inputs;
+  SharedConstants shared_constants;
+
+  // First pass, merge shared inputs
+  for (const auto& input : std::move(new_desc.inputs)) {
+    const FPNode* parent = input.first;
+    const int32_t count = input.second;
+
+    FPNode::InputsType parent_inputs;
+    FPConstAccum addon = zero_accum;
+
+    // Emulate a kMul node to catch things like:
+    // 3*a + a => 4*a
+    if (parent->node_type != FPNode::kMul) {
+      parent_inputs[parent] = 1;
+      addon += count;
+    } else {
+      parent_inputs = parent->inputs;
+      addon = parent->const_accum;
+      addon *= count;
+    }
+    shared_inputs.try_emplace(std::move(parent_inputs), zero_accum).first->second += addon;
+  }
+
+  // TODO: Try to merge things like:
+  // add { mul( N, {add(A, B)} ), A, B } => mul(N+1, {Add(A, B)}
+
+  // Second pass, merge shared constants
+  for (const auto& input : shared_inputs) {
+    auto& found = shared_constants.try_emplace(
+        input.second, std::vector<FPNode::InputsType>{});
+    found.first->second.push_back(input.first);
+  }
+
+  // Emit merged muls
+  new_desc.inputs.clear();
+  for (const auto& input : shared_constants) {
+    FPNode new_mul;
+    new_mul.node_type = FPNode::kMul;
+    new_mul.const_accum = input.first;
+
+    // Don't bother making an add chain
+    if (input.second.size() == 1) {
+      new_mul.inputs = input.second[0];
+    }
+    // Create add chain for nested muls
+    // e.g: 3 * (a + b + c)
+    else {
+      FPNode new_add;
+      new_add.node_type = FPNode::kAdd;
+      new_add.const_accum = graph.default_add_accum();
+      for (const auto& child_mul_inputs : input.second) {
+        FPNode new_child_mul;
+        new_child_mul.node_type = FPNode::kMul;
+        new_child_mul.const_accum = graph.default_mul_accum();
+        new_child_mul.inputs = child_mul_inputs;
+        new_child_mul.SimplifyInputs();
+        new_add.AddInput(graph.AddNode(std::move(new_child_mul)), 1);
+      }
+      new_add.SimplifyInputs();
+      new_mul.AddInput(graph.AddNode(std::move(new_add)), 1);
+    }
+    new_mul.SimplifyInputs();
+    new_desc.AddInput(graph.AddNode(std::move(new_mul)), 1);
+  }
+  new_desc.SimplifyInputs();
+}
+
+
+// Merge muls where are inputted to adds.
+//
+// This includes, wrapping inputs that have multiple counts with a mul.
+//  ({ X, 2 }) => mul(.constant = 2, .inputs = ( {X, 1} ))
+// 
+// Allowing the following rules to take place:
+//  (3 * a) + a                 => 4 * a
+//  (3 * a) + (2 * a)           => 5 * a
+//  (3 * a) + (-3 * a)          => 0
+bool MergeAddMulInputs(ReassocGraphFP& graph, FPNode& new_desc) {
+
+  if (new_desc.node_type != FPNode::kAdd) {
+    return false;
+  }
+
+  if (new_desc.inputs.size() < 2) {
+    return false;
+  }
+
+  using MergedInputs = std::unordered_map<FPNode::InputsType, FPConstAccum,
+    FPNode::InputsHasher>;
+  
+  bool has_mergeable = false;
+  MergedInputs merged_inputs;
+
+  for(const auto& input : new_desc.inputs) {
+    FPNode::InputsType mul_inputs;
+    FPConstAccum accum = graph.default_zero_accum;
+
+    // { X, 3 } => Mul(.C=3, { X, 1 })
+    if (input.second != 1) {
+      has_mergeable = true;
+    }
+
+    if (input.first->node_type == FPNode::kMul) {
+      mul_inputs = input.first->inputs;
+      accum = input.first->const_accum;
+      accum *= input.second;
+    }
+    // Emulate mul, to catch things like 3*a + a => 4*a
+    else {
+      mul_inputs.emplace(input.first, input.second);
+      accum += input.second;
+    }
+    auto found = merged_inputs.find(mul_inputs);
+    if (found != merged_inputs.end()) {
+      has_mergeable = true;
+      found->second += accum;
+    }
+    else {
+      merged_inputs.emplace(std::move(mul_inputs), std::move(accum));
+    }
+  }
+
+  if (!has_mergeable) {
+    return false;
+  }
+
+  new_desc.inputs.clear();
+  for (auto& merged_input : merged_inputs) {
+    FPNode new_mul = graph.Mul(merged_input.second, merged_input.first);
+    new_mul.SimplifyInputs();
+    new_desc.AddInput(graph.AddNode(std::move(new_mul)), 1);
+  }
+  return true;
+}
+
+// Merge muls with the same constant that are added together.
+//
+// Allowing the following rules to take place:
+//  (3 * a) + (3 * b) + (3 * c) => 3 * (a + b + c)
+bool MergeAddConstMulInputs(ReassocGraphFP& graph, FPNode& new_desc) {
+
+  if (new_desc.node_type != FPNode::kAdd) {
+    return false;
+  }
+
+  if (new_desc.inputs.size() < 2) {
+    return false;
+  }
+
+  using MergedConstants =
+    std::unordered_map<FPConstAccum, std::vector<FPNode::InputsType>,
+    FPConstAccum::Hash>;
+
+  bool has_mergeable = false;
+  MergedConstants merged_constants;
+  FPNode::InputsType extras;
+
+  for (const auto& input : new_desc.inputs) {
+    if (input.first->node_type == FPNode::kMul) {
+      FPConstAccum accum = input.first->const_accum;
+      accum *= input.second;
+      auto found = merged_constants.find(accum);
+      if (found != merged_constants.end()) {
+        found->second.push_back(input.first->inputs);
+        has_mergeable = true;
+      }
+      else {
+        merged_constants.emplace(
+          accum, std::vector<FPNode::InputsType>{input.first->inputs});
+      }
+    }
+    else {
+      extras.emplace(input.first, input.second);
+    }
+  }
+
+  if (!has_mergeable) {
+    return false;
+  }
+
+  new_desc.inputs.clear();
+  for (const auto& extra : extras) {
+    new_desc.AddInput(extra.first, extra.second);
+  }
+
+  for (const auto& merged : merged_constants) {
+    FPNode new_mul = graph.Mul();
+    new_mul.const_accum = merged.first; // MAKE HELPER
+
+    for (const FPNode::InputsType& new_add_inputs : merged.second) {
+      FPNode new_add = graph.Add(new_add_inputs);
+      new_add.SimplifyInputs();
+      new_mul.AddInput(graph.AddNode(std::move(new_add)), 1);
+    }
+
+    new_mul.SimplifyInputs();
+    new_desc.AddInput(graph.AddNode(std::move(new_mul)), 1);
+  }
+  new_desc.SimplifyInputs();
+
+  return true;
+}
+
+
+bool ApplyFPFoldingRules(ReassocGraphFP& graph, FPNode& new_desc) {
+  if (new_desc.node_type == FPNode::kConstant || new_desc.node_type == FPNode::kExternal) {
+    return false;
+  }
+  uint64_t prev_hash = FPNode::Hash{}(new_desc);
+  MergeAddMulInputs(graph, new_desc);
+  MergeAddConstMulInputs(graph, new_desc);
+  //  TODO on the mul side:
+  //  (3 * (10 + 3 * (a + b)))  => 30 + 9 * (a + b)
+
+  return prev_hash != FPNode::Hash{}(new_desc);
+}
+
+static const FPNode* SimplifyFPNode(ReassocGraphFP& graph, const FPNode* node) {
 
   if (node->node_type == FPNode::kConstant ||
-      node->node_type == FPNode::kExternal) {
+    node->node_type == FPNode::kExternal) {
     return node;
   }
+
+  constexpr uint32_t max_iterations = 20;
 
   FPNode new_desc;
   new_desc.node_type = node->node_type;
   new_desc.result_id = node->result_id;
   new_desc.const_accum = node->const_accum;
-  for (const auto& input : node->inputs) {
-    new_desc.AddInput(MergeAddMulInputs(graph, input.first), input.second);
+  new_desc.inputs = node->inputs;
+
+  // Simplify top level
+  while (ApplyFPFoldingRules(graph, new_desc));
+
+  // Simplify children
+  FPNode::InputsType children = std::move(new_desc.inputs);
+  new_desc.inputs.clear();
+  for (const auto& input : children) {
+    new_desc.AddInput(SimplifyFPNode(graph, input.first), input.second);
   }
   new_desc.SimplifyInputs();
 
-  if (new_desc.node_type == FPNode::kAdd) {
-    
-    const FPConstAccum& zero_accum = graph.default_add_accum;
+  // Simplify top level
+  while (ApplyFPFoldingRules(graph, new_desc));
 
-    using SharedInputs = std::unordered_map<FPNode::InputsType, FPConstAccum,
-                                            FPNode::InputsHasher>;
-    using SharedConstants =
-        std::unordered_map<FPConstAccum, std::vector<FPNode::InputsType>,
-                           FPConstAccum::Hash>;
-
-    FPNode::InputsType local_inputs = std::move(new_desc.inputs);
-    SharedInputs shared_inputs;
-    SharedConstants shared_constants;
-
-    // First pass, merge shared inputs
-    for (const auto& input : local_inputs) {
-      const FPNode* parent = input.first;
-      int32_t count = input.second;
-      // Emulate a kMul node
-      if (parent->node_type != FPNode::kMul) {
-        FPNode::InputsType tmp;
-        tmp[parent] = 1;
-        shared_inputs.try_emplace(tmp, zero_accum).first->second += count;
-      } else {
-        FPConstAccum addon = parent->const_accum;
-        addon *= count;
-        shared_inputs.try_emplace(parent->inputs, zero_accum).first->second +=
-            addon;
-      }
-    }
-    
-    // TODO: Try to merge things like:
-    // add { mul( N, {add(A, B)} ), A, B } => mul(N+1, {Add(A, B)}
-
-    // Second pass, merge shared constants
-    for (const auto& input : shared_inputs) {
-      shared_constants
-          .try_emplace(input.second, std::vector<FPNode::InputsType>{})
-          .first->second.push_back(input.first);
-    }
-
-    // Emit merged muls
-    for (const auto& input : shared_constants) {
-      FPNode new_mul;
-      new_mul.node_type = FPNode::kMul;
-      new_mul.const_accum = input.first;
-      
-      // Don't bother making an add chain
-      if (input.second.size() == 1) {
-        new_mul.inputs = input.second[0];
-      }
-      // Create add chain for nested muls
-      else {
-        FPNode new_add;
-        new_add.node_type = FPNode::kAdd;
-        new_add.const_accum = graph.default_add_accum;
-        for (const auto& child_mul_inputs : input.second) {
-          FPNode new_child_mul;
-          new_child_mul.node_type = FPNode::kMul;
-          new_child_mul.const_accum = graph.default_mul_accum;
-          new_child_mul.inputs = child_mul_inputs;
-          new_child_mul.SimplifyInputs();
-          new_add.AddInput(graph.AddNode(std::move(new_child_mul)), 1);
-        }
-        new_add.SimplifyInputs();
-        new_mul.AddInput(graph.AddNode(std::move(new_add)), 1);
-      }
-
-      new_mul.SimplifyInputs();
-      new_desc.AddInput(graph.AddNode(std::move(new_mul)), 1);
-    }
-  }
-
-  new_desc.SimplifyInputs();
   return graph.AddNode(std::move(new_desc));
 }
-
 
 }  // namespace reassociate
 
@@ -751,7 +977,7 @@ bool ReassociatePass::ReassociateFPGraph(Instruction* root,
   using namespace reassociate;
 
   analysis::Type* type = context()->get_type_mgr()->GetType(root->type_id());
-  ReassocGraphFP fpgraph(type, context()->get_type_mgr(),
+  ReassocGraphFP fpgraph(type,
                          context()->get_def_use_mgr(),
                          context()->get_constant_mgr());
 
@@ -765,7 +991,7 @@ bool ReassociatePass::ReassociateFPGraph(Instruction* root,
   fpgraph.PrintNode(std::cout, root_fp);
   std::cout.flush();
 
-   root_fp = MergeAddMulInputs(fpgraph, root_fp);
+   root_fp = SimplifyFPNode(fpgraph, root_fp);
 
    std::cout << "\n\n\nAFTER OPT:\n";
    fpgraph.PrintNode(std::cout, root_fp);
