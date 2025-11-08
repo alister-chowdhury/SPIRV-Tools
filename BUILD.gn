@@ -571,6 +571,8 @@ static_library("spvtools_opt") {
     "source/opt/propagator.h",
     "source/opt/reassociate_pass.cpp",
     "source/opt/reassociate_pass.h",
+    "source/opt/reassociation_graph.cpp",
+    "source/opt/reassociation_graph.h",
     "source/opt/reduce_load_size.cpp",
     "source/opt/reduce_load_size.h",
     "source/opt/redundancy_elimination.cpp",

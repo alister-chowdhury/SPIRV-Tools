@@ -39,7 +39,7 @@ class ReassociatePass : public Pass {
            IRContext::kAnalysisConstants | IRContext::kAnalysisTypes;
   }
 
-private:
+ private:
   bool ProcessInstructionsInBB(BasicBlock* bb);
   bool ReassociateFP(BasicBlock* bb);
   bool ReassociateFPGraph(Instruction* root, std::vector<Instruction*>&& graph);
