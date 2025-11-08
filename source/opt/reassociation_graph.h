@@ -334,6 +334,13 @@ class FPReassocGraph {
   //  (3 * a) + (3 * b) + (3 * c) => 3 * (a + b + c)
   bool MergeAddConstMulInputs(FPNode& desc);
 
+  // Attempt to propagate a muls constant value to a
+  // single add that only contains mul inputs.
+  //
+  // Allowing the following rules to take place:
+  //  (3 * (10 + 3 * (a + b)))  => 30 + 9 * (a + b)
+  bool PropagateConstMulAddInputs(FPNode& desc);
+
   // Applies folding rules sequentially once.
   bool ApplyFoldingRules(FPNode& desc);
 

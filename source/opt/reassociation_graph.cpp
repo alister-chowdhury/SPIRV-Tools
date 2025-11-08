@@ -536,6 +536,55 @@ bool FPReassocGraph::MergeAddConstMulInputs(FPNode& desc) {
   return true;
 }
 
+bool FPReassocGraph::PropagateConstMulAddInputs(FPNode& desc) {
+  if (desc.node_type != FPNode::kMul) {
+    return false;
+  }
+  if (desc.const_accum.IsDefaultMul()) {
+    return false;
+  }
+  
+  const FPNode* found = nullptr;
+
+  for (const auto& input : desc.inputs) {
+    if (input.first->node_type == FPNode::kAdd && input.second == 1) {
+      bool adding_all_muls = true;
+      for (const auto& add_input : input.first->inputs) {
+        if (add_input.first->node_type != FPNode::kMul) {
+          adding_all_muls = false;
+          break;
+        }
+      }
+      if (adding_all_muls) {
+        found = input.first;
+        break;
+      }
+    }
+  }
+
+  if (!found) {
+    return false;
+  }
+
+  desc.inputs.erase(found);
+  FPNode new_add = MakeAdd();
+  new_add.const_accum = desc.const_accum;
+  new_add.const_accum *= found->const_accum;
+
+  for (const auto& original_add_input : found->inputs) {
+    FPNode new_mul = *original_add_input.first;
+    new_mul.const_accum *= desc.const_accum;
+    new_mul.const_accum *= original_add_input.second;
+    new_mul.SimplifyInputs();
+    new_add.AddInput(AddNode(std::move(new_mul)), 1);
+  }
+  new_add.SimplifyInputs();
+
+  desc.const_accum.SetToDefaultMul();
+  desc.AddInput(AddNode(std::move(new_add)), 1);
+  return true;
+}
+
 bool FPReassocGraph::ApplyFoldingRules(FPNode& desc) {
   bool applied = false;
   if (MergeAddMulInputs(desc)) {
@@ -544,10 +593,13 @@ bool FPReassocGraph::ApplyFoldingRules(FPNode& desc) {
   if (MergeAddConstMulInputs(desc)) {
     applied = true;
   }
-  //  TODO on the mul side:
-  //  (3 * (10 + 3 * (a + b)))  => 30 + 9 * (a + b)
-  //
+  if (PropagateConstMulAddInputs(desc)) {
+    applied = true;
+  }
   //  TODO: factorization
+  //
+  //  TODO: relax -1* ?, might need to use desc hash
+  //                     rather than rely on bool
   return applied;
 }
 
@@ -563,18 +615,24 @@ const FPNode* FPReassocGraph::SimplifyNode(const FPNode* node) {
   new_desc.const_accum = node->const_accum;
   new_desc.inputs = node->inputs;
 
-  // Simplify top level
-  while (ApplyFoldingRules(new_desc));
-
-  // Simplify children
-  FPNode::InputsType children = std::move(new_desc.inputs);
-  new_desc.inputs.clear();
-  for (const auto& input : children) {
-    new_desc.AddInput(SimplifyNode(input.first), input.second);
+  // 1. Apply folding rules to this node.
+  // 2. Apply folding rules to children.
+  // 3. Apply folding rules to this node again,
+  //    if that did anything, go back to 1,
+  //    since we likely have new children.
+  do
+  {
+    // Top level simplify
+    while (ApplyFoldingRules(new_desc));
+    
+    // Simplify children
+    FPNode::InputsType children = std::move(new_desc.inputs);
+    new_desc.inputs.clear();
+    for (const auto& input : children) {
+      new_desc.AddInput(SimplifyNode(input.first), input.second);
+    }
+    new_desc.SimplifyInputs();
   }
-  new_desc.SimplifyInputs();
-
-  // Simplify top level
   while (ApplyFoldingRules(new_desc));
 
   return AddNode(std::move(new_desc));

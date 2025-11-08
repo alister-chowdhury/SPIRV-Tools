@@ -180,7 +180,7 @@ bool ReassociatePass::ReassociateFPGraph(Instruction* root,
 
   const FPNode* root_fp = fpgraph.FindInstruction(root);
 
-  std::cout << "BEFORE OPT2:\n\n";
+  std::cout << "BEFORE OPT:\n\n";
   root_fp->DotGraph(std::cout);
   std::cout << "\n\n";
   root_fp->PrintNode(std::cout);
