@@ -271,7 +271,7 @@ void FPNode::PrintNode(std::ostream& output, int32_t indent) const {
     int32_t indent_child = indent + 2;
     for (const auto& c : inputs) {
       if (c.second != 1) {
-        output << indentation << "        x" << c.second << "x\n";
+        output << indentation << "        " << c.second << "x\n";
       }
       c.first->PrintNode(output, indent_child);
       output << ",\n";
@@ -279,6 +279,90 @@ void FPNode::PrintNode(std::ostream& output, int32_t indent) const {
     output << indentation << "    }\n";
   }
   output << indentation << "}";
+}
+
+void FPNode::PrintEquation(std::ostream& output) const {
+  if (node_type == FPNode::kInvalid) {
+    output << "INVALID";
+    return;
+  }
+  if (node_type == FPNode::kExternal) {
+    output << "{" << result_id << "}";
+    return;
+  }
+
+  bool print_const_accum = false;
+  bool print_braces = false;
+  switch (node_type) {
+    case FPNode::kConstant:
+      print_const_accum = true;
+      break;
+    case FPNode::kAdd:
+      print_const_accum = !const_accum.IsDefaultAdd();
+      print_braces = true;
+      break;
+    case FPNode::kMul:
+      print_const_accum = !const_accum.IsDefaultMul();
+      print_braces = true;
+      break;
+    default:
+      break;
+  }
+
+  if (print_braces) {
+    output << '(';
+  }
+  output << ' ';
+
+  bool first_op = true;
+  const char add_op = node_type == FPNode::kAdd ? '+' : '*';
+  const char sub_op = node_type == FPNode::kAdd ? '-' : '/';
+
+  if (print_const_accum) {
+    size_t n = const_accum.size();
+    if (n != 1) {
+      output << '[';
+    }
+    for (size_t i = 0; i < n; ++i) {
+      output << const_accum[i];
+      if (i < (n - 1)) {
+        output << ", ";
+      }
+    }
+    if (n != 1) {
+      output << ']';
+    }
+
+    first_op = false;
+    output << ' ';
+  }
+
+  for (const auto& input : inputs) {
+    for (int32_t i = 0; i < input.second; ++i) {
+      if (!first_op) {
+        output << add_op << ' ';
+      }
+      input.first->PrintEquation(output);
+      output << ' ';
+      first_op = false;
+    }
+    for (int32_t i = 0; i > input.second; --i) {
+      if (!first_op) {
+        output << sub_op << ' ';
+      }
+      // '-' prefix
+      else if (node_type == FPNode::kAdd) {
+        output << '-';
+      }
+      input.first->PrintEquation(output);
+      output << ' ';
+      first_op = false;
+    }
+  }
+
+  if (print_braces) {
+    output << ')';
+  }
 }
 
 FPReassocGraph::FPReassocGraph(analysis::Type* type_,
@@ -426,10 +510,6 @@ bool FPReassocGraph::MergeAddMulInputs(FPNode& desc) {
     return false;
   }
 
-  if (desc.inputs.size() < 2) {
-    return false;
-  }
-
   using MergedInputs =
       std::unordered_map<FPNode::InputsType, FPConstAccum, FPNode::InputsHash>;
 
@@ -452,7 +532,7 @@ bool FPReassocGraph::MergeAddMulInputs(FPNode& desc) {
     }
     // Emulate mul, to catch things like 3*a + a => 4*a
     else {
-      mul_inputs.emplace(input.first, input.second);
+      mul_inputs.emplace(input.first, 1);
       accum += input.second;
     }
     auto found = merged_inputs.find(mul_inputs);
@@ -474,6 +554,7 @@ bool FPReassocGraph::MergeAddMulInputs(FPNode& desc) {
     new_mul.SimplifyInputs();
     desc.AddInput(AddNode(std::move(new_mul)), 1);
   }
+  desc.SimplifyInputs();
   return true;
 }
 
@@ -522,13 +603,15 @@ bool FPReassocGraph::MergeAddConstMulInputs(FPNode& desc) {
 
   for (const auto& merged : merged_constants) {
     FPNode new_mul = MakeMul();
-    new_mul.const_accum = merged.first;  // MAKE HELPER
-
+    new_mul.const_accum = merged.first;
+    FPNode new_add = MakeAdd();
     for (const FPNode::InputsType& new_add_inputs : merged.second) {
-      FPNode new_add = MakeAdd(new_add_inputs);
-      new_add.SimplifyInputs();
-      new_mul.AddInput(AddNode(std::move(new_add)), 1);
+      for (const auto& add_input : new_add_inputs) {
+        new_add.AddInput(add_input.first, add_input.second);
+      }
     }
+    new_add.SimplifyInputs();
+    new_mul.AddInput(AddNode(std::move(new_add)), 1);
     new_mul.SimplifyInputs();
     desc.AddInput(AddNode(std::move(new_mul)), 1);
   }
@@ -543,7 +626,7 @@ bool FPReassocGraph::PropagateConstMulAddInputs(FPNode& desc) {
   if (desc.const_accum.IsDefaultMul()) {
     return false;
   }
-  
+
   const FPNode* found = nullptr;
 
   for (const auto& input : desc.inputs) {
@@ -582,6 +665,7 @@ bool FPReassocGraph::PropagateConstMulAddInputs(FPNode& desc) {
 
   desc.const_accum.SetToDefaultMul();
   desc.AddInput(AddNode(std::move(new_add)), 1);
+  desc.SimplifyInputs();
   return true;
 }
 
@@ -620,11 +704,10 @@ const FPNode* FPReassocGraph::SimplifyNode(const FPNode* node) {
   // 3. Apply folding rules to this node again,
   //    if that did anything, go back to 1,
   //    since we likely have new children.
-  do
-  {
+  do {
     // Top level simplify
     while (ApplyFoldingRules(new_desc));
-    
+
     // Simplify children
     FPNode::InputsType children = std::move(new_desc.inputs);
     new_desc.inputs.clear();
@@ -632,8 +715,7 @@ const FPNode* FPReassocGraph::SimplifyNode(const FPNode* node) {
       new_desc.AddInput(SimplifyNode(input.first), input.second);
     }
     new_desc.SimplifyInputs();
-  }
-  while (ApplyFoldingRules(new_desc));
+  } while (ApplyFoldingRules(new_desc));
 
   return AddNode(std::move(new_desc));
 }

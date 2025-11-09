@@ -184,6 +184,8 @@ bool ReassociatePass::ReassociateFPGraph(Instruction* root,
   root_fp->DotGraph(std::cout);
   std::cout << "\n\n";
   root_fp->PrintNode(std::cout);
+  std::cout << "\n\n";
+  root_fp->PrintEquation(std::cout);
   std::cout.flush();
 
   root_fp = fpgraph.SimplifyNode(root_fp);
@@ -192,6 +194,8 @@ bool ReassociatePass::ReassociateFPGraph(Instruction* root,
   root_fp->DotGraph(std::cout);
   std::cout << "\n\n";
   root_fp->PrintNode(std::cout);
+  std::cout << "\n\n";
+  root_fp->PrintEquation(std::cout);
   std::cout.flush();
 
   // ReassocGraphFP::FPReassocNode* root_node = fpgraph.GetUserExternal(root);

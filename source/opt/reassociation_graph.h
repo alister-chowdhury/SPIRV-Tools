@@ -175,6 +175,7 @@ struct FPNode {
   };
 
   bool operator==(const FPNode& other) const;
+  bool operator!=(const FPNode& other) const { return !(*this == other); }
 
   // Add an input to either a kAdd or kMul.
   // * If the input is a constant, it'll be consumed.
@@ -200,8 +201,11 @@ struct FPNode {
   // Create a dotgraph representation of this node and its inputs.
   void DotGraph(std::ostream& output) const;
 
-  // Print a representation of this node and its inputs.
+  // Print a descriptive representation of this node and its inputs.
   void PrintNode(std::ostream& output, int32_t indent = 0) const;
+
+  // Print a equation representation of this node and its inputs.
+  void PrintEquation(std::ostream& output) const;
 
   NodeType node_type = kInvalid;
 
@@ -281,14 +285,18 @@ class FPReassocGraph {
     FPNode desc;
     desc.node_type = FPNode::kMul;
     desc.const_accum = const_accum;
-    desc.inputs = inputs;
+    for (const auto& input : inputs) {
+      desc.AddInput(input.first, input.second);
+    }
     return desc;
   }
   FPNode MakeMul(const FPNode::InputsType& inputs) const {
     FPNode desc;
     desc.node_type = FPNode::kMul;
     desc.const_accum = DefaultMulAccum();
-    desc.inputs = inputs;
+    for (const auto& input : inputs) {
+      desc.AddInput(input.first, input.second);
+    }
     return desc;
   }
   FPNode MakeMul() const {
@@ -302,14 +310,18 @@ class FPReassocGraph {
     FPNode desc;
     desc.node_type = FPNode::kAdd;
     desc.const_accum = const_accum;
-    desc.inputs = inputs;
+    for (const auto& input : inputs) {
+      desc.AddInput(input.first, input.second);
+    }
     return desc;
   }
   FPNode MakeAdd(const FPNode::InputsType& inputs) const {
     FPNode desc;
     desc.node_type = FPNode::kAdd;
     desc.const_accum = DefaultAddAccum();
-    desc.inputs = inputs;
+    for (const auto& input : inputs) {
+      desc.AddInput(input.first, input.second);
+    }
     return desc;
   }
   FPNode MakeAdd() const {
