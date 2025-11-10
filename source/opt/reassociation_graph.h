@@ -331,6 +331,12 @@ class FPReassocGraph {
     return desc;
   }
 
+  // Expand coefficients of add chains.
+  // This is mainly to help factor more constants together.
+  //
+  //  (3 * (a + b)) + (2 * a) + (2 * b) => (5 * a) + (5 * b)
+  bool ExpandCoefficients(FPNode& desc);
+
   // Convert add chains into muls and merge muls with the same inputs.
   //
   // Allowing the following rules to take place:
@@ -344,7 +350,7 @@ class FPReassocGraph {
   //
   // Allowing the following rules to take place:
   //  (3 * a) + (3 * b) + (3 * c) => 3 * (a + b + c)
-  bool MergeAddConstMulInputs(FPNode& desc);
+  bool FactorAddConstMulInputs(FPNode& desc);
 
   // Attempt to propagate a muls constant value to a
   // single add that only contains mul inputs.

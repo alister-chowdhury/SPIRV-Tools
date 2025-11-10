@@ -505,6 +505,67 @@ const FPNode* FPReassocGraph::AddInstruction(Instruction* inst) {
   return new_node;
 }
 
+bool FPReassocGraph::ExpandCoefficients(FPNode& desc) {
+  if (desc.node_type != FPNode::kAdd) {
+    return false;
+  }
+
+  // Extract composites and if told to, add them as inputs to desc if told too.
+  auto TryToExtractComposite = [&](const auto& input, bool apply) {
+    if (input.first->node_type != FPNode::kMul ||
+        (input.first->inputs.size() != 1)) {
+      return false;
+    }
+    auto first_child_entry = input.first->inputs.begin();
+    // Not handling any powers here.
+    // (Although that might be worthwhile for factorisation)
+    if (first_child_entry->second != 1) {
+      return false;
+    }
+    const FPNode* first_child = first_child_entry->first;
+    if ((first_child->node_type == FPNode::kAdd) &&
+            (first_child->inputs.size() > 1) ||
+        !first_child->const_accum.IsDefaultAdd()) {
+      if (apply) {
+        if (!first_child->const_accum.IsDefaultAdd()) {
+          FPConstAccum addon = first_child->const_accum;
+          addon *= input.first->const_accum;
+          desc.const_accum += addon;
+        }
+        for (const auto& child_input : first_child->inputs) {
+          FPNode new_mul = MakeMul({{child_input.first, 1}});
+          new_mul.const_accum = input.first->const_accum;
+          new_mul.const_accum *= child_input.second;
+          new_mul.SimplifyInputs();
+          desc.AddInput(AddNode(std::move(new_mul)), 1);
+        }
+      }
+      return true;
+    }
+    return false;
+  };
+
+  bool has_any_composites = false;
+  for (const auto& input : desc.inputs) {
+    if (TryToExtractComposite(input, false)) {
+      has_any_composites = true;
+      break;
+    }
+  }
+  if (!has_any_composites) {
+    return false;
+  }
+  FPNode::InputsType old_inputs = std::move(desc.inputs);
+  desc.inputs.clear();
+  for (const auto& input : old_inputs) {
+    if (!TryToExtractComposite(input, true)) {
+      desc.AddInput(input.first, input.second);
+    }
+  }
+  desc.SimplifyInputs();
+  return true;
+}
+
 bool FPReassocGraph::MergeAddMulInputs(FPNode& desc) {
   if (desc.node_type != FPNode::kAdd) {
     return false;
@@ -558,7 +619,7 @@ bool FPReassocGraph::MergeAddMulInputs(FPNode& desc) {
   return true;
 }
 
-bool FPReassocGraph::MergeAddConstMulInputs(FPNode& desc) {
+bool FPReassocGraph::FactorAddConstMulInputs(FPNode& desc) {
   if (desc.node_type != FPNode::kAdd) {
     return false;
   }
@@ -670,11 +731,17 @@ bool FPReassocGraph::PropagateConstMulAddInputs(FPNode& desc) {
 }
 
 bool FPReassocGraph::ApplyFoldingRules(FPNode& desc) {
+  FPNode prev = desc;
+
   bool applied = false;
+
+  if (ExpandCoefficients(desc)) {
+    applied = true;
+  }
   if (MergeAddMulInputs(desc)) {
     applied = true;
   }
-  if (MergeAddConstMulInputs(desc)) {
+  if (FactorAddConstMulInputs(desc)) {
     applied = true;
   }
   if (PropagateConstMulAddInputs(desc)) {
@@ -682,9 +749,9 @@ bool FPReassocGraph::ApplyFoldingRules(FPNode& desc) {
   }
   //  TODO: factorization
   //
-  //  TODO: relax -1* ?, might need to use desc hash
-  //                     rather than rely on bool
-  return applied;
+  //  TODO: relax -1* ?
+
+  return applied && (prev != desc);
 }
 
 const FPNode* FPReassocGraph::SimplifyNode(const FPNode* node) {
