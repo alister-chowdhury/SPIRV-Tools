@@ -628,8 +628,13 @@ bool FPReassocGraph::FactorAddConstMulInputs(FPNode& desc) {
     return false;
   }
 
+  struct AddMulInput {
+    int32_t add_count{};
+    FPNode::InputsType nested_mul_inputs;
+  };
+
   using MergedConstants =
-      std::unordered_map<FPConstAccum, std::vector<FPNode::InputsType>,
+      std::unordered_map<FPConstAccum, std::vector<AddMulInput>,
                          FPConstAccum::Hash>;
 
   bool has_mergeable = false;
@@ -638,15 +643,32 @@ bool FPReassocGraph::FactorAddConstMulInputs(FPNode& desc) {
 
   for (const auto& input : desc.inputs) {
     if (input.first->node_type == FPNode::kMul) {
+      AddMulInput add_mul_input;
+      add_mul_input.add_count = 1;
+      add_mul_input.nested_mul_inputs = input.first->inputs;
+
       FPConstAccum accum = input.first->const_accum;
       accum *= input.second;
       auto found = merged_constants.find(accum);
+
+      // Attempt to merge with an already existing entry
       if (found != merged_constants.end()) {
-        found->second.push_back(input.first->inputs);
+        found->second.emplace_back(std::move(add_mul_input));
         has_mergeable = true;
-      } else {
-        merged_constants.emplace(
-            accum, std::vector<FPNode::InputsType>{input.first->inputs});
+      }
+      // Try again, but negated, turning this into a subtract.
+      FPConstAccum neg_accum = accum;
+      neg_accum.Negate();
+      found = merged_constants.find(neg_accum);
+      if (found != merged_constants.end()) {
+        add_mul_input.add_count = -1;
+        found->second.emplace_back(std::move(add_mul_input));
+        has_mergeable = true;
+      }
+      // Fallback to just adding a new entry
+      else {
+        merged_constants.emplace(accum,
+                                 std::vector<AddMulInput>{add_mul_input});
       }
     } else {
       extras.emplace(input.first, input.second);
@@ -663,18 +685,19 @@ bool FPReassocGraph::FactorAddConstMulInputs(FPNode& desc) {
   }
 
   for (const auto& merged : merged_constants) {
-    FPNode new_mul = MakeMul();
-    new_mul.const_accum = merged.first;
+    FPNode mul_constant = MakeMul();
+    mul_constant.const_accum = merged.first;
     FPNode new_add = MakeAdd();
-    for (const FPNode::InputsType& new_add_inputs : merged.second) {
-      for (const auto& add_input : new_add_inputs) {
-        new_add.AddInput(add_input.first, add_input.second);
-      }
+    for (const AddMulInput& add_mul_inputs : merged.second) {
+      FPNode nested_mul = MakeMul(add_mul_inputs.nested_mul_inputs);
+      nested_mul.SimplifyInputs();
+      new_add.AddInput(AddNode(std::move(nested_mul)),
+                       add_mul_inputs.add_count);
     }
     new_add.SimplifyInputs();
-    new_mul.AddInput(AddNode(std::move(new_add)), 1);
-    new_mul.SimplifyInputs();
-    desc.AddInput(AddNode(std::move(new_mul)), 1);
+    mul_constant.AddInput(AddNode(std::move(new_add)), 1);
+    mul_constant.SimplifyInputs();
+    desc.AddInput(AddNode(std::move(mul_constant)), 1);
   }
   desc.SimplifyInputs();
   return true;
@@ -692,14 +715,21 @@ bool FPReassocGraph::PropagateConstMulAddInputs(FPNode& desc) {
 
   for (const auto& input : desc.inputs) {
     if (input.first->node_type == FPNode::kAdd && input.second == 1) {
-      bool adding_all_muls = true;
+      bool relevant_candidate = true;
       for (const auto& add_input : input.first->inputs) {
         if (add_input.first->node_type != FPNode::kMul) {
-          adding_all_muls = false;
+          relevant_candidate = false;
+          break;
+        }
+        // Don't introduce a mul that wasn't already going
+        // to take place.
+        if (add_input.first->const_accum.IsDefaultMul() ||
+            add_input.first->const_accum.IsMinusOne()) {
+          relevant_candidate = false;
           break;
         }
       }
-      if (adding_all_muls) {
+      if (relevant_candidate) {
         found = input.first;
         break;
       }
@@ -730,6 +760,40 @@ bool FPReassocGraph::PropagateConstMulAddInputs(FPNode& desc) {
   return true;
 }
 
+bool FPReassocGraph::HoistMulByNegOne(FPNode& desc) {
+  if (desc.node_type != FPNode::kAdd) {
+    return false;
+  }
+
+  bool has_any_mul_neg_one = false;
+  for (const auto& input : desc.inputs) {
+    if (input.first->node_type == FPNode::kMul &&
+        input.first->const_accum.IsMinusOne()) {
+      has_any_mul_neg_one = true;
+      break;
+    }
+  }
+
+  if (!has_any_mul_neg_one) {
+    return false;
+  }
+
+  FPNode::InputsType old_inputs = std::move(desc.inputs);
+  desc.inputs.clear();
+  for (const auto& input : old_inputs) {
+    if (input.first->node_type == FPNode::kMul &&
+        input.first->const_accum.IsMinusOne()) {
+      FPNode new_mul = MakeMul(input.first->inputs);
+      new_mul.SimplifyInputs();
+      desc.AddInput(AddNode(std::move(new_mul)), -input.second);
+    } else {
+      desc.AddInput(input.first, input.second);
+    }
+  }
+  desc.SimplifyInputs();
+  return true;
+}
+
 bool FPReassocGraph::ApplyFoldingRules(FPNode& desc) {
   FPNode prev = desc;
 
@@ -749,7 +813,9 @@ bool FPReassocGraph::ApplyFoldingRules(FPNode& desc) {
   }
   //  TODO: factorization
   //
-  //  TODO: relax -1* ?
+  if (HoistMulByNegOne(desc)) {
+    applied = true;
+  }
 
   return applied && (prev != desc);
 }
@@ -759,6 +825,32 @@ const FPNode* FPReassocGraph::SimplifyNode(const FPNode* node) {
       node->node_type == FPNode::kExternal) {
     return node;
   }
+
+  // TODO for instruction emitting:
+  //
+  // It would be "nice" to try and reduce the number of
+  // "duplicate" mul operations which are fed into add-chains
+  // which can't be merged:
+  //
+  // e.g:
+  //    b + (50 * x) and c + (-50 * x)
+  //    =>
+  //    b + (50 * x) and c - (50 * x)
+  //
+  //
+  // Likewise:
+  //    OpAdd C = a, b
+  //    OpAdd D = b, C
+  //  ...
+  //    OpAdd E = b, b
+  //    OpAdd F = E, c
+  //    =>
+  //    OpAdd U = b, b
+  //    OpAdd D = U, a
+  //    ...
+  //    OpAdd F = U, c
+  //
+  // So the total number of operations can be brought down.
 
   FPNode new_desc;
   new_desc.node_type = node->node_type;

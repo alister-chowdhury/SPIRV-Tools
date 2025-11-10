@@ -112,6 +112,12 @@ struct FPConstAccum {
   bool IsDefaultAdd() const { return IsZero(); }
   void SetToDefaultAdd() { *this = 0.0; }
 
+  void Negate() {
+    for (double& v : vals) {
+      v = -v;
+    }
+  }
+
   double& operator[](int32_t index) { return vals[index]; }
   const double& operator[](int32_t index) const { return vals[index]; }
   size_t size() const { return vals.size(); }
@@ -350,14 +356,20 @@ class FPReassocGraph {
   //
   // Allowing the following rules to take place:
   //  (3 * a) + (3 * b) + (3 * c) => 3 * (a + b + c)
+  //  (5 * a) + (-5 * b)          => 5 * (a - b)
   bool FactorAddConstMulInputs(FPNode& desc);
 
   // Attempt to propagate a muls constant value to a
-  // single add that only contains mul inputs.
+  // single add that only contains mul inputs, which
+  // already have a mul by constant taking place.
   //
   // Allowing the following rules to take place:
   //  (3 * (10 + 3 * (a + b)))  => 30 + 9 * (a + b)
   bool PropagateConstMulAddInputs(FPNode& desc);
+
+  // Convert muls in add chains, which have a constant
+  // of -1 to be 1.
+  bool HoistMulByNegOne(FPNode& desc);
 
   // Applies folding rules sequentially once.
   bool ApplyFoldingRules(FPNode& desc);

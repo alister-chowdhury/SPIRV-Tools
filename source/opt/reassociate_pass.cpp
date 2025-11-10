@@ -81,7 +81,8 @@ bool ReassociatePass::ReassociateFP(BasicBlock* bb) {
       switch (inst->opcode()) {
         case spv::Op::OpFDiv:
         case spv::Op::OpFMul:
-          // case spv::Op::OpVectorTimesScalar: // TODO
+          // case spv::Op::OpVectorTimesScalar:
+          // TODO but only if one side is const.
         case spv::Op::OpFAdd:
         case spv::Op::OpFSub:
         case spv::Op::OpFNegate:
