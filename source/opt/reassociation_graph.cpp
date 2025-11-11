@@ -760,6 +760,87 @@ bool FPReassocGraph::PropagateConstMulAddInputs(FPNode& desc) {
   return true;
 }
 
+bool FPReassocGraph::FactorAddMulInputs(FPNode& desc) {
+
+  // Factor whichever coefficient which is used the most.
+  auto FactorNext = [&] {
+    using FactorMap =
+      std::unordered_map<const FPNode*, std::vector<const FPNode*>>;
+
+    if (desc.node_type != FPNode::kAdd) {
+      return false;
+    }
+
+    // Nodes which share a positive coefficient
+    FactorMap positive_nodes;
+    size_t positive_max = 0;
+    const FPNode* positive_node = nullptr;
+
+    // Nodes which share a negative coefficient
+    FactorMap negative_nodes;
+    size_t negative_max = 0;
+    const FPNode* negative_node = nullptr;
+
+    for (const auto& input : desc.inputs) {
+      if (input.first->node_type != FPNode::kMul) {
+        continue;
+      }
+      for (const auto& mul_input : input.first->inputs) {
+        bool use_positive = mul_input.second >= 0;
+        FactorMap& target_map = use_positive ? positive_nodes : negative_nodes;
+        size_t& target_max = use_positive ? positive_max : negative_max;
+        const FPNode*& target_node =
+            use_positive ? positive_node : negative_node;
+
+        auto found = target_map.find(mul_input.first);
+        if (found != target_map.end()) {
+          found->second.push_back(input.first);
+          if (found->second.size() > target_max) {
+            target_max = found->second.size();
+            target_node = mul_input.first;
+          }
+        } else {
+          target_map.emplace(mul_input.first,
+                             std::vector<const FPNode*>{input.first});
+        }
+      }
+    }
+
+    if ((positive_max < 2) && (negative_max < 2)) {
+      return false;
+    }
+
+    bool use_positive = (positive_max >= negative_max);
+    FactorMap& target_map = use_positive ? positive_nodes : negative_nodes;
+    const FPNode* target_node = use_positive ? positive_node : negative_node;
+    std::vector<const FPNode*> children = target_map.at(target_node);
+
+    FPNode new_mul = MakeMul();
+    new_mul.AddInput(target_node, use_positive ? 1 : -1);
+
+    FPNode new_add = MakeAdd();
+    for (const FPNode* child : children) {
+      desc.inputs.erase(child);
+      FPNode fixed_child = *child;
+      fixed_child.AddInput(target_node, use_positive ? -1 : 1);
+      fixed_child.SimplifyInputs();
+      new_add.AddInput(AddNode(std::move(fixed_child)), 1);
+    }
+    new_add.SimplifyInputs();
+    new_mul.AddInput(AddNode(std::move(new_add)), 1);
+    desc.AddInput(AddNode(std::move(new_mul)), 1);
+    desc.SimplifyInputs();
+    return true;
+  };
+
+  bool did_any_work = FactorNext();
+  if (did_any_work) {
+    // Keep factoring until we can't.
+    while (FactorNext());
+  }
+  return did_any_work;
+}
+
 bool FPReassocGraph::HoistMulByNegOne(FPNode& desc) {
   if (desc.node_type != FPNode::kAdd) {
     return false;
@@ -811,8 +892,9 @@ bool FPReassocGraph::ApplyFoldingRules(FPNode& desc) {
   if (PropagateConstMulAddInputs(desc)) {
     applied = true;
   }
-  //  TODO: factorization
-  //
+  if (FactorAddMulInputs(desc)) {
+    applied = true;
+  }
   if (HoistMulByNegOne(desc)) {
     applied = true;
   }

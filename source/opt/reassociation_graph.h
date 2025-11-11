@@ -367,8 +367,19 @@ class FPReassocGraph {
   //  (3 * (10 + 3 * (a + b)))  => 30 + 9 * (a + b)
   bool PropagateConstMulAddInputs(FPNode& desc);
 
+  // Merge muls with a shared input that are added together.
+  //
+  // Allowing the following rules to take place:
+  // (x * y) + (x * z)        => x * (y + z)
+  // (5 * x * x) + (3 * x)    => x * (3 + (x * 5))
+  bool FactorAddMulInputs(FPNode& desc);
+
   // Convert muls in add chains, which have a constant
   // of -1 to be 1.
+  //
+  // Allowing the following rules to take place:
+  //  (-1 * a) + b = b - a
+  //  b - (-1 * a) = b + a
   bool HoistMulByNegOne(FPNode& desc);
 
   // Applies folding rules sequentially once.
