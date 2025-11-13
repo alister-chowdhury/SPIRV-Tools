@@ -761,11 +761,10 @@ bool FPReassocGraph::PropagateConstMulAddInputs(FPNode& desc) {
 }
 
 bool FPReassocGraph::FactorAddMulInputs(FPNode& desc) {
-
   // Factor whichever coefficient which is used the most.
   auto FactorNext = [&] {
     using FactorMap =
-      std::unordered_map<const FPNode*, std::vector<const FPNode*>>;
+        std::unordered_map<const FPNode*, std::vector<const FPNode*>>;
 
     if (desc.node_type != FPNode::kAdd) {
       return false;

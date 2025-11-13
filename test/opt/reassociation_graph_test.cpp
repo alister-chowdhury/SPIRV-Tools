@@ -1192,6 +1192,279 @@ TEST_F(ReassocGraphBuilderTest, TestFPPropagateConstMulAddInputs) {
   }
 }
 
+TEST_F(ReassocGraphBuilderTest, TestFPFactorAddMulInputs) {
+  const FPNode* external_1 = GetExternal(1);
+  const FPNode* external_2 = GetExternal(2);
+  const FPNode* external_3 = GetExternal(3);
+  const FPNode* external_4 = GetExternal(4);
+
+  // a = no change
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(external_1, 1);
+    add.SimplifyInputs();
+    FPNode add_2 = add;
+    EXPECT_FALSE(graph.FactorAddMulInputs(add_2));
+    EXPECT_EQ(add, add_2);
+  }
+
+  // -a = no change
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(external_1, -1);
+    add.SimplifyInputs();
+    FPNode add_2 = add;
+    EXPECT_FALSE(graph.FactorAddMulInputs(add_2));
+    EXPECT_EQ(add, add_2);
+  }
+
+  // a + b = no change
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(external_1, 1);
+    add.AddInput(external_2, 1);
+    add.SimplifyInputs();
+    FPNode add_2 = add;
+    EXPECT_FALSE(graph.FactorAddMulInputs(add_2));
+    EXPECT_EQ(add, add_2);
+  }
+
+  // (5 * a) + b = no change
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(GetMul({{external_1, 1}, {GetConst(5.0), 1}}), 1);
+    add.AddInput(external_2, 1);
+    add.SimplifyInputs();
+    FPNode add_2 = add;
+    EXPECT_FALSE(graph.FactorAddMulInputs(add_2));
+    EXPECT_EQ(add, add_2);
+  }
+
+  // (5 * a) + (3 * b) = no change
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(GetMul({{external_1, 1}, {GetConst(5.0), 1}}), 1);
+    add.AddInput(GetMul({{external_2, 1}, {GetConst(3.0), 1}}), 1);
+    add.SimplifyInputs();
+    FPNode add_2 = add;
+    EXPECT_FALSE(graph.FactorAddMulInputs(add_2));
+    EXPECT_EQ(add, add_2);
+  }
+
+  // (-2 * a) + b = no change
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(GetMul({{external_1, 1}, {GetConst(-2.0), 1}}), 1);
+    add.AddInput(external_2, 1);
+    add.SimplifyInputs();
+    FPNode add_2 = add;
+    EXPECT_FALSE(graph.FactorAddMulInputs(add_2));
+    EXPECT_EQ(add, add_2);
+  }
+
+  // (a * b) + (a * c) = a * (b + c)
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(GetMul({{external_1, 1}, {external_2, 1}}), 1);
+    add.AddInput(GetMul({{external_1, 1}, {external_3, 1}}), 1);
+    add.SimplifyInputs();
+    EXPECT_TRUE(graph.FactorAddMulInputs(add));
+    EXPECT_EQ(add,
+              graph.MakeMul({{external_1, 1},
+                             {GetAdd({{external_2, 1}, {external_3, 1}}), 1}}));
+  }
+
+  // (b / a) + (c / a) = (b + c) / a
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(GetMul({{external_1, -1}, {external_2, 1}}), 1);
+    add.AddInput(GetMul({{external_1, -1}, {external_3, 1}}), 1);
+    add.SimplifyInputs();
+    EXPECT_TRUE(graph.FactorAddMulInputs(add));
+    EXPECT_EQ(add,
+              graph.MakeMul({{external_1, -1},
+                             {GetAdd({{external_2, 1}, {external_3, 1}}), 1}}));
+  }
+
+  // (a * b) + (a * c) + d = (a * (b + c)) + d
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(GetMul({{external_1, 1}, {external_2, 1}}), 1);
+    add.AddInput(GetMul({{external_1, 1}, {external_3, 1}}), 1);
+    add.AddInput(external_4, 1);
+    add.SimplifyInputs();
+    EXPECT_TRUE(graph.FactorAddMulInputs(add));
+    EXPECT_EQ(add,
+              graph.MakeAdd(
+                  {{external_4, 1},
+                   {GetMul({{external_1, 1},
+                            {GetAdd({{external_2, 1}, {external_3, 1}}), 1}}),
+                    1}}));
+  }
+
+  // (b / a) + (b / a) + d = ((b + c) / a) + d
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(GetMul({{external_1, -1}, {external_2, 1}}), 1);
+    add.AddInput(GetMul({{external_1, -1}, {external_3, 1}}), 1);
+    add.AddInput(external_4, 1);
+    add.SimplifyInputs();
+    EXPECT_TRUE(graph.FactorAddMulInputs(add));
+    EXPECT_EQ(add,
+              graph.MakeAdd(
+                  {{external_4, 1},
+                   {GetMul({{external_1, -1},
+                            {GetAdd({{external_2, 1}, {external_3, 1}}), 1}}),
+                    1}}));
+  }
+
+  // (a * b) + (a * c) + 10 = (a * (b + c)) + 10
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(GetMul({{external_1, 1}, {external_2, 1}}), 1);
+    add.AddInput(GetMul({{external_1, 1}, {external_3, 1}}), 1);
+    add.AddInput(GetConst(10), 1);
+    add.SimplifyInputs();
+    EXPECT_TRUE(graph.FactorAddMulInputs(add));
+    EXPECT_EQ(add,
+              graph.MakeAdd(
+                  {{GetConst(10), 1},
+                   {GetMul({{external_1, 1},
+                            {GetAdd({{external_2, 1}, {external_3, 1}}), 1}}),
+                    1}}));
+  }
+
+  // (b / a) + (b / a) + 5 = ((b + c) / a) + 5
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(GetMul({{external_1, -1}, {external_2, 1}}), 1);
+    add.AddInput(GetMul({{external_1, -1}, {external_3, 1}}), 1);
+    add.AddInput(GetConst(5), 1);
+    add.SimplifyInputs();
+    EXPECT_TRUE(graph.FactorAddMulInputs(add));
+    EXPECT_EQ(add,
+              graph.MakeAdd(
+                  {{GetConst(5), 1},
+                   {GetMul({{external_1, -1},
+                            {GetAdd({{external_2, 1}, {external_3, 1}}), 1}}),
+                    1}}));
+  }
+
+  // (a * b) + (a * c * d) = (a * (b + c * d))
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(GetMul({{external_1, 1}, {external_2, 1}}), 1);
+    add.AddInput(GetMul({{external_1, 1}, {external_3, 1}, {external_4, 1}}),
+                 1);
+    add.SimplifyInputs();
+    EXPECT_TRUE(graph.FactorAddMulInputs(add));
+    EXPECT_EQ(add,
+              graph.MakeMul(
+                  {{external_1, 1},
+                   {GetAdd({{external_2, 1},
+                            {GetMul({{external_3, 1}, {external_4, 1}}), 1}}),
+                    1}}));
+  }
+
+  // (a * b) + (a * c * 10) = (a * (b + c * 10))
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(GetMul({{external_1, 1}, {external_2, 1}}), 1);
+    add.AddInput(GetMul({{external_1, 1}, {external_3, 1}, {GetConst(10), 1}}),
+                 1);
+    add.SimplifyInputs();
+    EXPECT_TRUE(graph.FactorAddMulInputs(add));
+    EXPECT_EQ(add,
+              graph.MakeMul(
+                  {{external_1, 1},
+                   {GetAdd({{external_2, 1},
+                            {GetMul({{external_3, 1}, {GetConst(10), 1}}), 1}}),
+                    1}}));
+  }
+
+  // (a * a * b) + (a * c) = (a * (a * b + c))
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(GetMul({{external_1, 2}, {external_2, 1}}), 1);
+    add.AddInput(GetMul({{external_1, 1}, {external_3, 1}}), 1);
+    add.SimplifyInputs();
+    EXPECT_TRUE(graph.FactorAddMulInputs(add));
+    EXPECT_EQ(add,
+              graph.MakeMul(
+                  {{external_1, 1},
+                   {GetAdd({{external_3, 1},
+                            {GetMul({{external_1, 1}, {external_2, 1}}), 1}}),
+                    1}}));
+  }
+
+  // (a * a * b) + (a * a * c) = (a * (a * b + a * c))
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(GetMul({{external_1, 2}, {external_2, 1}}), 1);
+    add.AddInput(GetMul({{external_1, 2}, {external_3, 1}}), 1);
+    add.SimplifyInputs();
+    EXPECT_TRUE(graph.FactorAddMulInputs(add));
+    EXPECT_EQ(add,
+              graph.MakeMul(
+                  {{external_1, 1},
+                   {GetAdd({{GetMul({{external_1, 1}, {external_3, 1}}), 1},
+                            {GetMul({{external_1, 1}, {external_2, 1}}), 1}}),
+                    1}}));
+  }
+
+  // (a * b) + (a * c) + (a * d) = a * (b + c + d)
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(GetMul({{external_1, 1}, {external_2, 1}}), 1);
+    add.AddInput(GetMul({{external_1, 1}, {external_3, 1}}), 1);
+    add.AddInput(GetMul({{external_1, 1}, {external_4, 1}}), 1);
+    add.SimplifyInputs();
+    EXPECT_TRUE(graph.FactorAddMulInputs(add));
+    EXPECT_EQ(add,
+              graph.MakeMul(
+                  {{external_1, 1},
+                   {GetAdd({{external_2, 1}, {external_3, 1}, {external_4, 1}}),
+                    1}}));
+  }
+
+  // (a * b) + (a * c) + (a / d) = a * (b + c + 1/d)
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(GetMul({{external_1, 1}, {external_2, 1}}), 1);
+    add.AddInput(GetMul({{external_1, 1}, {external_3, 1}}), 1);
+    add.AddInput(GetMul({{external_1, 1}, {external_4, -1}}), 1);
+    add.SimplifyInputs();
+    EXPECT_TRUE(graph.FactorAddMulInputs(add));
+    EXPECT_EQ(add, graph.MakeMul({{external_1, 1},
+                                  {GetAdd({{external_2, 1},
+                                           {external_3, 1},
+                                           {GetMul({{external_4, -1}}), 1}}),
+                                   1}}));
+  }
+
+  // (a * 10) + (a * c) + (b * 20) + (b * d) = a * (10 + c) + b * (20 + d)
+  {
+    FPNode add = graph.MakeAdd();
+    add.AddInput(GetMul({{external_1, 1}, {GetConst(10), 1}}), 1);
+    add.AddInput(GetMul({{external_1, 1}, {external_3, 1}}), 1);
+    add.AddInput(GetMul({{external_2, 1}, {GetConst(20), 1}}), 1);
+    add.AddInput(GetMul({{external_2, 1}, {external_4, 1}}), 1);
+    add.SimplifyInputs();
+    EXPECT_TRUE(graph.FactorAddMulInputs(add));
+    EXPECT_EQ(add,
+              graph.MakeAdd({
+
+                  {GetMul({{external_1, 1},
+                           {GetAdd({{GetConst(10), 1}, {external_3, 1}}), 1}}),
+                   1},
+                  {GetMul({{external_2, 1},
+                           {GetAdd({{GetConst(20), 1}, {external_4, 1}}), 1}}),
+                   1}
+
+              }));
+  }
+}
+
 TEST_F(ReassocGraphBuilderTest, TestFPHoistMulByNegOne) {
   const FPNode* external_1 = GetExternal(1);
   const FPNode* external_2 = GetExternal(2);
