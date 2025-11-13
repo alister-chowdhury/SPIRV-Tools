@@ -435,7 +435,7 @@ const FPNode* FPReassocGraph::FindInstructionOrCreateExternal(
               break;
             }
             const_values[i] =
-                (f->width() == 32) ? c->GetFloat() : c->GetDouble();
+                (f->width() == 32) ? c2->GetFloat() : c2->GetDouble();
           }
         }
       }
