@@ -495,6 +495,12 @@ const FPNode* FPReassocGraph::AddInstruction(Instruction* inst) {
       new_node_desc.const_accum = DefaultAddAccum();
       new_node_desc.AddInput(ResolveInstArg(0), -1);
       break;
+    case spv::Op::OpVectorTimesScalar:
+      new_node_desc.node_type = FPNode::kMul;
+      new_node_desc.const_accum = DefaultMulAccum();
+      new_node_desc.AddInput(ResolveInstArg(0), 1);
+      new_node_desc.AddInput(ResolveInstArg(1), 1);
+      break;
     default:
       assert(false);
       break;
