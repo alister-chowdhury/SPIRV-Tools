@@ -68,6 +68,9 @@ bool ValueNumberTable::IsReadOnlyVariable(Instruction* address_def) {
   if (address_def->opcode() == spv::Op::OpLoad) {
     const analysis::Type* address_type =
         context()->get_type_mgr()->GetType(address_def->type_id());
+    if (address_type->AsImage() != nullptr) {
+      return address_type->AsImage()->sampled() == 1;
+    }
     if (address_type->AsSampledImage() != nullptr) {
       const auto* image_type =
           address_type->AsSampledImage()->image_type()->AsImage();
@@ -97,27 +100,39 @@ uint32_t ValueNumberTable::AssignValueNumber(Instruction* inst) {
     return assign_new_number(inst);
   }
 
-  // OpSampledImage and OpImage must remain in the same basic block in which
-  // they are used, because of this we will assign each one it own value number.
+  // > All OpSampledImage instructions, or instructions that load an
+  // > image or sampler reference, must be in the same block in which
+  // > their Result <id> are consumed.
+  bool must_remain_in_basic_block = false;
+
   switch (inst->opcode()) {
     case spv::Op::OpSampledImage:
     case spv::Op::OpImage:
     case spv::Op::OpVariable:
-      return assign_new_number(inst);
+      must_remain_in_basic_block = true;
+      break;
     default:
       break;
   }
 
-  // A load that yields an image, sampler, or sampled image must remain in
-  // the same basic block.  So assign it its own value number.
   if (inst->IsLoad()) {
     switch (context()->get_def_use_mgr()->GetDef(inst->type_id())->opcode()) {
       case spv::Op::OpTypeSampledImage:
       case spv::Op::OpTypeImage:
       case spv::Op::OpTypeSampler:
-        return assign_new_number(inst);
+        must_remain_in_basic_block = true;
+        break;
       default:
         break;
+    }
+  }
+
+  // Top level instructions have no basic-block, so we're using 0
+  // as the logical |id| for them.
+  uint32_t basic_block_id = 0;
+  if (must_remain_in_basic_block) {
+    if (BasicBlock* bb = context()->get_instr_block(inst)) {
+      basic_block_id = bb->id();
     }
   }
 
@@ -208,6 +223,18 @@ uint32_t ValueNumberTable::AssignValueNumber(Instruction* inst) {
       break;
   }
 
+  if (must_remain_in_basic_block) {
+    auto bb_iterator = bb_instruction_to_value_.find(basic_block_id);
+    if (bb_iterator != bb_instruction_to_value_.end()) {
+      auto value_iterator = bb_iterator->second.find(value_ins);
+      if (value_iterator != bb_iterator->second.end()) {
+        value = id_to_value_[value_iterator->first.result_id()];
+        id_to_value_[inst->result_id()] = value;
+        return value;
+      }
+    }
+  }
+
   // Otherwise, we check if this value has been computed before.
   auto value_iterator = instruction_to_value_.find(value_ins);
   if (value_iterator != instruction_to_value_.end()) {
@@ -219,7 +246,13 @@ uint32_t ValueNumberTable::AssignValueNumber(Instruction* inst) {
   // If not, assign it a new value number.
   value = TakeNextValueNumber();
   id_to_value_[inst->result_id()] = value;
-  instruction_to_value_[value_ins] = value;
+
+  if (must_remain_in_basic_block) {
+    BasicBlock* bb = context()->get_instr_block(inst);
+    bb_instruction_to_value_[basic_block_id][value_ins] = value;
+  } else {
+    instruction_to_value_[value_ins] = value;
+  }
   return value;
 }
 

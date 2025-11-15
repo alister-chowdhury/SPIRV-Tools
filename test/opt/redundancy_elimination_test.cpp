@@ -418,6 +418,37 @@ TEST_F(RedundancyEliminationTest, PreserveLoadYieldingImage) {
   SinglePassRunAndMatch<RedundancyEliminationPass>(text, false);
 }
 
+TEST_F(RedundancyEliminationTest, RemoveRedundantImage) {
+  // This is more strict than needed.
+  // This is sufficient to ensure that the load of an image
+  // occurs in the same basic block as its use.
+  const std::string text = R"(
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main"
+               OpExecutionMode %main OriginLowerLeft
+               OpName %main "main"
+               OpName %load_ty "load_ty"
+               OpDecorate %var DescriptorSet 0
+               OpDecorate %var Binding 0
+       %void = OpTypeVoid
+          %6 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %load_ty = OpTypeImage %float 2D 0 0 0 1 Rgba32f
+%ptr_load_ty = OpTypePointer UniformConstant %load_ty
+        %var = OpVariable %ptr_load_ty UniformConstant
+       %main = OpFunction %void None %6
+        ; CHECK: OpLoad %load_ty
+        ; CHECK-NEXT: OpReturn
+         %15 = OpLabel
+         %16 = OpLoad %load_ty %var
+         %17 = OpLoad %load_ty %var
+               OpReturn
+               OpFunctionEnd
+  )";
+  SinglePassRunAndMatch<RedundancyEliminationPass>(text, false);
+}
+
 TEST_F(RedundancyEliminationTest, PreserveLoadYieldingSampler) {
   const std::string text = R"(
                OpCapability Shader

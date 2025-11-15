@@ -88,6 +88,12 @@ class ValueNumberTable {
 
   std::unordered_map<Instruction, uint32_t, ValueTableHash, ComputeSameValue>
       instruction_to_value_;
+  // Instructions which are required to be unique to a basic-block.
+  // Key is the id of the basic-block, or 0 for the top level.
+  std::unordered_map<uint32_t,
+                     std::unordered_map<Instruction, uint32_t, ValueTableHash,
+                                        ComputeSameValue>>
+      bb_instruction_to_value_;
   std::unordered_map<uint32_t, uint32_t> id_to_value_;
   // A cache for the results of |IsReadOnlyVariable|. The key is the base
   // variable of a load.
