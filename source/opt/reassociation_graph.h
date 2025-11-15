@@ -17,6 +17,7 @@
 
 #include <iostream>
 #include <map>
+#include <variant>
 #include <vector>
 
 #include "source/util/hash_combine.h"
@@ -252,6 +253,14 @@ class FPReassocGraph {
     default_one_accum.vals.resize(num_components, 1.0);
   }
 
+  bool IsVector() const {
+    return is_vector;
+  }
+
+  uint32_t ElementSize() const {
+    return default_zero_accum.size();
+  }
+
   // Add a node to the graphs internal storage, which will de-duplicate
   // nodes with the same representation.
   const FPNode* AddNode(FPNode&& node);
@@ -387,6 +396,12 @@ class FPReassocGraph {
 
   // Apply folding rules to a node and all its children.
   const FPNode* SimplifyNode(const FPNode* node);
+
+  // Resolve all nodes used in the graph.
+  std::vector<const FPNode*> ResolveNodes(const FPNode* node) const;
+
+  // Resolve all nodes used in the graph.
+  static void TopologicallySort(std::vector<const FPNode*>& nodes);
 
   const FPConstAccum& DefaultZeroAccum() const { return default_zero_accum; }
   const FPConstAccum& DefaultOneAccum() const { return default_one_accum; }

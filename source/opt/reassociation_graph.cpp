@@ -913,32 +913,6 @@ const FPNode* FPReassocGraph::SimplifyNode(const FPNode* node) {
     return node;
   }
 
-  // TODO for instruction emitting:
-  //
-  // It would be "nice" to try and reduce the number of
-  // "duplicate" mul operations which are fed into add-chains
-  // which can't be merged:
-  //
-  // e.g:
-  //    b + (50 * x) and c + (-50 * x)
-  //    =>
-  //    b + (50 * x) and c - (50 * x)
-  //
-  //
-  // Likewise:
-  //    OpAdd C = a, b
-  //    OpAdd D = b, C
-  //  ...
-  //    OpAdd E = b, b
-  //    OpAdd F = E, c
-  //    =>
-  //    OpAdd U = b, b
-  //    OpAdd D = U, a
-  //    ...
-  //    OpAdd F = U, c
-  //
-  // So the total number of operations can be brought down.
-
   FPNode new_desc;
   new_desc.node_type = node->node_type;
   new_desc.result_id = node->result_id;
@@ -964,6 +938,37 @@ const FPNode* FPReassocGraph::SimplifyNode(const FPNode* node) {
   } while (ApplyFoldingRules(new_desc));
 
   return AddNode(std::move(new_desc));
+}
+
+static void ResolveNodesVisitor(
+    const FPNode* node, std::unordered_set<const FPNode*>& unique_nodes) {
+  assert(node->node_type != FPNode::kInvalid);
+  if (unique_nodes.find(node) != unique_nodes.end()) {
+    return;
+  }
+  unique_nodes.insert(node);
+  for (const auto& input : node->inputs) {
+    FPNode::NodeType node_type = input.first->node_type;
+    if (node_type == FPNode::kExternal || node_type == FPNode::kConstant) {
+      continue;
+    }
+    ResolveNodesVisitor(input.first, unique_nodes);
+  }
+}
+
+std::vector<const FPNode*> FPReassocGraph::ResolveNodes(
+    const FPNode* node) const {
+  std::unordered_set<const FPNode*> unique_nodes;
+  ResolveNodesVisitor(node, unique_nodes);
+  std::vector<const FPNode*> nodes(unique_nodes.begin(), unique_nodes.end());
+  return nodes;
+}
+
+void FPReassocGraph::TopologicallySort(std::vector<const FPNode*>& nodes) {
+  std::sort(nodes.begin(), nodes.end(),
+    [](const FPNode* first, const FPNode* second) {
+      return first->id < second->id;
+    });
 }
 
 }  // namespace reassociate
