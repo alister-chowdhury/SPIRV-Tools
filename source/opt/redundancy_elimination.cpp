@@ -33,6 +33,11 @@ Pass::Status RedundancyEliminationPass::Process() {
     DominatorTree& dom_tree =
         context()->GetDominatorAnalysis(&func)->GetDomTree();
 
+    if (HoistSharedInstrutions(dom_tree.GetRoot(), vnTable)) {
+      modified = true;
+      context()->InvalidateAnalyses(IRContext::kAnalysisDefUse);
+      context()->BuildInvalidAnalyses(IRContext::kAnalysisDefUse);
+    }
     if (EliminateRedundanciesFrom(dom_tree.GetRoot(), vnTable)) {
       modified = true;
     }
@@ -58,5 +63,92 @@ bool RedundancyEliminationPass::EliminateRedundanciesFrom(
   }
   return modified;
 }
+
+bool RedundancyEliminationPass::HoistSharedInstrutions(
+  DominatorTreeNode* bb, const ValueNumberTable& vnTable) {
+  bool modified = false;
+  for (DominatorTreeNode* child : *bb) {
+    if (HoistSharedInstrutions(child, vnTable)) {
+      modified = true;
+    }
+  }
+  if (bb->children_.size() < 2) {
+    return modified;
+  }
+
+  std::vector<std::unordered_set<Instruction*>> child_instructions;
+  while(true)
+  {
+    std::unordered_map<uint32_t, uint32_t> vn_counts;
+    uint32_t relevant_child_count = 0;
+    for (DominatorTreeNode* child : *bb) {
+      bool has_instructions = false;
+      child->bb_->ForEachInst([&](Instruction* inst) {
+        if (inst->result_id() == 0) {
+          return;
+        }
+        uint32_t vn = vnTable.GetValueNumber(inst);
+        if (vn != 0) {
+          vn_counts[vn] += 1;
+          has_instructions = true;
+        }
+      });
+      if (has_instructions) {
+        ++relevant_child_count;
+      }
+    }
+    
+    // Stop hoisting if there's only one child
+    if (relevant_child_count == 1) {
+      break;
+    }
+
+    std::unordered_set<uint32_t> dedup_vns;
+    for (const auto& vnc : vn_counts) {
+      if (vnc.second >= relevant_child_count) {
+        dedup_vns.insert(vnc.first);
+      }
+    }
+    // Nothing was duplicated, bail.
+    if (dedup_vns.empty()) {
+      break;
+    }
+    std::unordered_map<uint32_t, std::vector<Instruction*>> matching;
+    for (DominatorTreeNode* child : *bb) {
+      child->bb_->ForEachInst([&](Instruction* inst) {
+        if (inst->result_id() == 0) {
+          return;
+        }
+        uint32_t vn = vnTable.GetValueNumber(inst);
+        if (dedup_vns.find(vn) != dedup_vns.end()) {
+          matching[vn].push_back(inst);
+        }
+      });
+    }
+
+    for (auto& match : matching) {
+      std::vector<Instruction*>& instructions = match.second;
+      Instruction* promoted = instructions.back();
+      instructions.pop_back();
+      uint32_t promoted_result = promoted->result_id();
+
+      // Insert the node just before a OpBranch or OpBranchConditional
+      promoted->RemoveFromList();
+      bb->bb_->rbegin()->PreviousNode()->InsertBefore(std::unique_ptr<Instruction>(promoted));
+      context()->set_instr_block(promoted, bb->bb_);
+
+      for (Instruction* demoted : instructions) {
+        context()->KillNamesAndDecorates(demoted);
+        context()->ReplaceAllUsesWith(demoted->result_id(), promoted_result);
+        context()->KillInst(demoted);
+      }
+    }
+
+    modified = true;
+  }
+
+  return modified;
+}
+
 }  // namespace opt
 }  // namespace spvtools

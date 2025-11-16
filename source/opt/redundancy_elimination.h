@@ -47,6 +47,11 @@ class RedundancyEliminationPass : public LocalRedundancyEliminationPass {
   // Returns true if at least one instruction is deleted.
   bool EliminateRedundanciesFrom(DominatorTreeNode* bb,
                                  const ValueNumberTable& vnTable);
+
+private:
+  // Find instructions which share the same vn and move them into their parent.
+  bool HoistSharedInstrutions(DominatorTreeNode* bb,
+                              const ValueNumberTable& vnTable);
 };
 
 }  // namespace opt
