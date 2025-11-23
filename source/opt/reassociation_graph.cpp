@@ -904,6 +904,9 @@ bool FPReassocGraph::ApplyFoldingRules(FPNode& desc) {
     applied = true;
   }
 
+  // TODO:
+  // Add a relax mul by 2, to be an add ?
+
   return applied && (prev != desc);
 }
 
@@ -940,6 +943,8 @@ const FPNode* FPReassocGraph::SimplifyNode(const FPNode* node) {
   return AddNode(std::move(new_desc));
 }
 
+#if 0
+
 static void ResolveNodesVisitor(
     const FPNode* node, std::unordered_set<const FPNode*>& unique_nodes) {
   assert(node->node_type != FPNode::kInvalid);
@@ -966,9 +971,282 @@ std::vector<const FPNode*> FPReassocGraph::ResolveNodes(
 
 void FPReassocGraph::TopologicallySort(std::vector<const FPNode*>& nodes) {
   std::sort(nodes.begin(), nodes.end(),
-    [](const FPNode* first, const FPNode* second) {
-      return first->id < second->id;
-    });
+            [](const FPNode* first, const FPNode* second) {
+              return first->id < second->id;
+            });
+}
+
+
+struct FPWriteInstructionContext {
+  
+  std::map<Instruction, uint32_t> value_to_ids;
+  std::unordered_map<const FPNode*, uint32_t> node_to_id;
+  std::vector<Instruction*> original_instructions;
+  std::vector<Instruction> staged_instructions;
+
+  uint32_t const_temp_id_alloc;
+  std::unordered_map<FPConstAccum, uint32_t, FPConstAccum::Hash> constant_to_temp_id;
+
+  uint32_t AllocateConstant(const FPConstAccum& constant);
+  uint32_t AllocateInstruction(Instruction& inst);
+};
+
+
+uint32_t FPWriteInstructionContext::AllocateConstant(const FPConstAccum& constant)
+{
+  auto found = constant_to_temp_id.find(constant);
+  if (found != constant_to_temp_id.end()) {
+    return found->second;
+  }
+  // If this overflows to 0, it will propagate as a failure
+  // and the rest of the pass will gracefully assume it couldn't
+  // proceed.
+  uint32_t temp_id = const_temp_id_alloc++;
+  constant_to_temp_id[constant] = temp_id;
+  return temp_id;
+}
+
+uint32_t FPWriteInstructionContext::AllocateInstruction(Instruction& inst) {
+  auto found = value_to_ids.find(inst);
+  if (found != value_to_ids.end()) {
+    return found->second;
+  }
+
+  // No more free instructions!
+  if (original_instructions.empty()) {
+    return 0;
+  }
+
+  uint32_t id = original_instructions.back()->result_id();
+  original_instructions.pop_back();
+  value_to_ids[inst] = id;
+  inst.SetResultId(id);
+  staged_instructions.emplace_back(std::move(inst));
+  return id;
+}
+
+struct WrittenNodeInput {
+  uint32_t id = 0;
+  uint32_t count = 0;
+};
+
+
+uint32_t WriteInstruction(FPWriteInstructionContext& ctx, const FPNode* node) {
+
+  auto found_node_to_id = ctx.node_to_id.find(node);
+  if (found_node_to_id != ctx.node_to_id.end()) {
+    return found_node_to_id->second;
+  }
+
+  if (node->node_type == FPNode::kExternal) {
+    ctx.node_to_id[node] = node->result_id;
+    return node->result_id;
+  }
+
+  if (node->node_type == FPNode::kConstant) {
+    return ctx.AllocateConstant(node->const_accum);
+  }
+
+  assert(!node->inputs.empty());
+
+  // There are a few things we want to achieve when emitting instructions:
+  // 1. Avoid having to emit an OpFNegative(x) or OpFDiv(1, x).
+  // 2. Have constants towards the end, for the benefit of folding rules.
+  // 3. Group and factor counts together, for less instructions:
+  //   1. (a^3 * b^3 * c^3) =>  ABC   = a * b * c
+  //                            ABC2  = ABC * ABC  ; a^2 * b^2 * c^2
+  //                            out   = ABC2 * ABC ; a^3 * b^3 * c^3
+  //
+  //   2. (a^3 * b^3 * c^2) =>  AB    = a * b
+  //                            ABC   = AB * c
+  //                            ABC2  = ABC * ABC  ; a^2 * b^2 * c^2
+  //                            out   = ABC2 * AB  ; a^3 * b^3 * c^3
+  //   3. a^7 => A2   = a * a
+  //             A4   = A2 * A2  ; a^4
+  //             A6   = A4 * A2  ; a^6
+  //             out  = A6 * a   ; a^7
+
+  bool has_constant = ((node->node_type == FPNode::kAdd && !node->const_accum.IsDefaultAdd()) ||
+                       (node->node_type == FPNode::kMul && !node->const_accum.IsDefaultMul()));
+
+  // Factor both positive and negative counts seperate, joining them at the end.
+  using ChainType = std::vector<WrittenNodeInput>;
+  ChainType positive_chain;
+  ChainType negative_chain;
+
+  for (const auto& input : node->inputs) {
+    assert(input.second != 0);
+    uint32_t child_id = WriteInstruction(ctx, input.first);
+    if (child_id == 0) {
+      return 0;
+    }
+    if (input.second > 0) {
+      positive_chain.push_back({ child_id, (uint32_t)input.second});
+    }
+    else {
+      negative_chain.push_back({ child_id, (uint32_t)-input.second });
+    }
+  }
+
+  auto WriteGroupedInstructions = [&](ChainType& chain) {
+    spv::Op opcode = spv::Op::OpNop;
+    switch (node->node_type) {
+    case FPNode::kAdd: opcode = spv::Op::OpFAdd; break;
+    case FPNode::kMul: opcode = spv::Op::OpFMul; break;
+    default:
+      assert(false);
+      break;
+    }
+
+    // Do one at a time, no need for sorting?
+    // min factor: A^10 * B^2 * C   => 1
+    //                              => ((A * B) * C)
+    //             A^9 * B^1        => 1
+    //                              => R *= (A * B) ; already computed
+    //             A^8              => 8
+    //                                 (A * A)
+    //                                 (A2 * A2)
+    //                                 R *= (A4 * A4)
+
+    std::stable_sort(chain.begin(), chain.end(), [](const auto& a, const auto& b) {
+      return a.count > b.count;
+      });
+
+  };
+
+  // Resolve positive chain
+  // Resolve negative chain
+  // Resolve constant
+
+  return 0;
+
+}
+
+bool FPReassocGraph::WriteInstructions22222(
+    IRContext* ctx,
+    const FPNode* root_node,
+    std::vector<Instruction*>&& original_instructions) {
+
+  std::vector<const FPNode*> nodes = ResolveNodes(root_node);
+
+  // It's not very likely that we're going to reduce the number
+  // of instructions if our node count isn't already less.
+  if (nodes.size() >= original_instructions.size()) {
+    return false;
+  }
+
+  FPWriteInstructionContext visit_ctx;
+  visit_ctx.original_instructions = std::move(original_instructions);
+  visit_ctx.const_temp_id_alloc = ctx->module()->ComputeIdBound();
+
+  // Write instructions in topological order, bailing if we couldn't
+  // allocate a new instruction.
+  TopologicallySort(nodes);
+  for (const FPNode* node : nodes) {
+    if (WriteInstruction(visit_ctx, node) == 0) {
+      return false;
+    }
+  }
+
+  return true;
+}
+#endif
+
+
+// Apply commutivity rules for instructions.
+// e.g:
+//  a * b = b * a
+//  a + b = b + a
+//  10 + a = a + 10
+//  10 * a = a * 10
+void FPInstructionApplyCommutivity(FPInstruction& inst) {
+  switch (inst.opcode) {
+  case spv::Op::OpFAdd:
+  case spv::Op::OpFMul: {
+    bool swap = false;
+    // Keep the constant on the lhs
+    if (inst.lhs_constant != inst.rhs_constant) {
+      if (inst.rhs_constant) {
+        swap = true;
+      }
+    }
+    // Keep the lower result_id on the lhs
+    else if (inst.lhs > inst.rhs) {
+      swap = true;
+    }
+    if (swap) {
+      std::swap(inst.lhs, inst.rhs);
+      std::swap(inst.lhs_constant, inst.rhs_constant);
+    }
+  } break;
+  default:
+    break;
+  }
+}
+
+template <class Op>
+bool FPInstructionOp(FPInstruction a, FPInstruction b) {
+  if (a.opcode == spv::Op::OpFNegate ||
+    a.opcode == spv::Op::OpVectorTimesScalar) {
+    return Op{}(std::tie(a.opcode, a.lhs_constant, a.lhs),
+      std::tie(b.opcode, b.lhs_constant, b.lhs));
+  }
+  FPInstructionApplyCommutivity(a);
+  FPInstructionApplyCommutivity(b);
+  return Op{}(std::tie(a.opcode, a.lhs_constant, a.lhs, a.rhs_constant, a.rhs),
+    std::tie(b.opcode, b.lhs_constant, b.lhs, b.rhs_constant, b.rhs));
+}
+
+bool FPInstruction::operator<(const FPInstruction& other) const {
+  return FPInstructionOp<std::less<void>>(*this, other);
+}
+
+bool FPInstruction::operator==(const FPInstruction& other) const {
+  return FPInstructionOp<std::equal_to<void>>(*this, other);
+}
+
+bool FPInstruction::operator!=(const FPInstruction& other) const {
+  return FPInstructionOp<std::not_equal_to<void>>(*this, other);
+}
+
+uint32_t FPWriteInstructionsContext::AllocateConstant(const FPConstAccum& constant) {
+  auto found = seen_constants.find(constant);
+  if (found != seen_constants.end()) {
+    return found->second;
+  }
+  uint32_t constant_id = constants.size();
+  seen_constants[constant] = constant_id;
+  constants.push_back(constant);
+  return constant_id;
+}
+
+uint32_t FPWriteInstructionsContext::AllocateInstruction(const FPInstruction& inst) {
+  auto found = seen_instructions.find(inst);
+  if (found != seen_instructions.end()) {
+    return found->second;
+  }
+
+  // No more free ids, bail.
+  if (free_ids.empty()) {
+    return 0;
+  }
+
+  uint32_t result_id = free_ids.back()->result_id();
+  free_ids.pop_back();
+  seen_instructions[inst] = result_id;
+
+  FPInstruction with_result_id = inst;
+  with_result_id.result_id = result_id;
+  instructions.push_back(with_result_id);
+  return result_id;
+}
+
+uint32_t FPReassocGraph::WriteInstructions( const FPNode* root_node,
+                                            std::vector<Instruction*> free_ids,
+                                            std::vector<FPInstruction>& out_instructions,
+                                            std::vector<FPConstAccum>& out_constants) {
+
+  return 0;
 }
 
 }  // namespace reassociate

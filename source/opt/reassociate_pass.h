@@ -23,6 +23,7 @@ namespace spvtools {
 namespace opt {
 
 // TODO DESC
+// Will only replace chain iff it would produce less instructions
 
 class ReassociatePass : public Pass {
  public:
@@ -42,7 +43,7 @@ class ReassociatePass : public Pass {
  private:
   bool ProcessInstructionsInBB(BasicBlock* bb);
   bool ReassociateFP(BasicBlock* bb);
-  bool ReassociateFPGraph(Instruction* root, std::vector<Instruction*>&& graph);
+  bool ReassociateFPGraph(Instruction* root, std::vector<Instruction*>&& instructions);
 };
 
 }  // namespace opt

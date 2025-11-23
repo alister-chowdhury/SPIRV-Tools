@@ -234,6 +234,53 @@ struct FPNode {
   InputsType inputs;
 };
 
+// This represents a single instruction, that is staged to be emitted.
+struct FPInstruction {
+  // Valid values for |opcode| are:
+  // * OpFAdd
+  // * OpFSub
+  // * OpFMul
+  // * OpFDiv
+  // * OpFNegate
+  // * OpVectorTimesScalar
+  spv::Op opcode = spv::Op::OpNop;
+
+  uint32_t result_id = 0;
+
+  // If |lhs_constant| is true, |lhs| is the index of a constant, otherwise it's
+  // a previous instructions |result_id|.
+  bool lhs_constant = false;
+  uint32_t lhs = 0;
+  
+  // If |rhs_constant| is true, |rhs| is the index of a constant, otherwise it's
+  // a previous instructions |result_id|, these are ignored for OpFNegate and
+  // OpVectorTimesScalar.
+  bool rhs_constant = false;
+  uint32_t rhs = 0;
+
+  bool operator<(const FPInstruction& other) const;
+  bool operator==(const FPInstruction& other) const;
+  bool operator!=(const FPInstruction& other) const;
+};
+
+// Context used for writing instructions.
+// Keeps track of seen instructions and constants.
+class FPWriteInstructionsContext {
+
+public:
+  FPWriteInstructionsContext(const std::vector<Instruction*>& free_ids_) : free_ids(free_ids_) {}
+
+  uint32_t AllocateConstant(const FPConstAccum& constant);
+  uint32_t AllocateInstruction(const FPInstruction& inst);
+
+private:
+  std::map<FPInstruction, uint32_t> seen_instructions;
+  std::unordered_map<FPConstAccum, uint32_t, FPConstAccum::Hash> seen_constants;
+  std::vector<Instruction*> free_ids;
+  std::vector<FPInstruction> instructions;
+  std::vector<FPConstAccum> constants;
+};
+
 // Reassociation graph for floating-point formats.
 //
 class FPReassocGraph {
@@ -272,6 +319,7 @@ class FPReassocGraph {
   // * OpFSub
   // * OpFAdd
   // * OpFNegate
+  // * OpVectorTimesScalar
   const FPNode* AddInstruction(Instruction* inst);
 
   // Find an instruction that was previous added.
@@ -397,11 +445,23 @@ class FPReassocGraph {
   // Apply folding rules to a node and all its children.
   const FPNode* SimplifyNode(const FPNode* node);
 
+#if 0
   // Resolve all nodes used in the graph.
   std::vector<const FPNode*> ResolveNodes(const FPNode* node) const;
 
-  // Resolve all nodes used in the graph.
+  // Sort nodes by their dependency order.
+  // Internally, this just uses their their |id| as a key.
   static void TopologicallySort(std::vector<const FPNode*>& nodes);
+#endif
+
+  // Given a root, and instructions whose id's we can harvest.
+  // Attempt to emit instructions that would replace them.
+  // If this succeeds, the result will be the final nodes result_id.
+  // If this fails (running out of free ids), the result will be 0.
+  uint32_t WriteInstructions( const FPNode* root_node,
+                              std::vector<Instruction*> free_ids,
+                              std::vector<FPInstruction>& out_instructions,
+                              std::vector<FPConstAccum>& out_constants);
 
   const FPConstAccum& DefaultZeroAccum() const { return default_zero_accum; }
   const FPConstAccum& DefaultOneAccum() const { return default_one_accum; }
