@@ -31,6 +31,7 @@ constexpr uint32_t kInsertObjectIdInIdx = 0;
 constexpr uint32_t kInsertCompositeIdInIdx = 1;
 constexpr uint32_t kExtInstSetIdInIdx = 0;
 constexpr uint32_t kExtInstInstructionInIdx = 1;
+constexpr uint32_t kExtInstInstructionFirstArg = 2;
 constexpr uint32_t kFMixXIdInIdx = 2;
 constexpr uint32_t kFMixYIdInIdx = 3;
 constexpr uint32_t kFMixAIdInIdx = 4;
@@ -2667,6 +2668,126 @@ FoldingRule RedundantFMix() {
   };
 }
 
+// Fold redundant reciprocal sqrt and rsqrt.
+// Cases:
+// 1/sqrt(x)  = rsqrt(x)
+// 1/rsqrt(x) = sqrt(x)
+FoldingRule RedundantSqrtInverseSqrt() {
+  return [](IRContext* context, Instruction* inst,
+            const std::vector<const analysis::Constant*>& constants) {
+    assert(inst->opcode() == spv::Op::OpFDiv);
+
+    if (!constants[0] || !inst->IsFloatingPointFoldingAllowed()) {
+      return false;
+    }
+
+    Instruction* rhs =
+        context->get_def_use_mgr()->GetDef(inst->GetSingleWordInOperand(1));
+
+    if (rhs->opcode() != spv::Op::OpExtInst ||
+        getFloatConstantKind(constants[0]) != FloatConstantKind::One) {
+      return false;
+    }
+
+    uint32_t std450 =
+        context->get_feature_mgr()->GetExtInstImportId_GLSLstd450();
+
+    if (rhs->GetSingleWordInOperand(kExtInstSetIdInIdx) == std450) {
+      uint32_t new_ext_inst = GLSLstd450Bad;
+
+      switch (rhs->GetSingleWordInOperand(kExtInstInstructionInIdx)) {
+        case GLSLstd450Sqrt:
+          new_ext_inst = GLSLstd450InverseSqrt;
+          break;
+        case GLSLstd450InverseSqrt:
+          new_ext_inst = GLSLstd450Sqrt;
+          break;
+        default:
+          break;
+      }
+
+      if (new_ext_inst != GLSLstd450Bad) {
+        inst->SetOpcode(spv::Op::OpExtInst);
+        inst->SetInOperands(
+            {{SPV_OPERAND_TYPE_ID, {std450}},
+             {SPV_OPERAND_TYPE_EXTENSION_INSTRUCTION_NUMBER, {new_ext_inst}},
+             {SPV_OPERAND_TYPE_ID,
+              {rhs->GetSingleWordInOperand(kExtInstInstructionFirstArg)}}});
+        return true;
+      }
+    }
+    return false;
+  };
+}
+
+// Fold a sqrt which has a square input
+// Cases:
+// sqrt(x * x) = abs(x)
+FoldingRule FoldSqrtSquare() {
+  return [](IRContext* context, Instruction* inst,
+            const std::vector<const analysis::Constant*>&) {
+    assert(inst->opcode() == spv::Op::OpExtInst);
+    assert(inst->GetSingleWordInOperand(kExtInstInstructionInIdx) ==
+           GLSLstd450Sqrt);
+
+    if (!inst->IsFloatingPointFoldingAllowed()) {
+      return false;
+    }
+
+    Instruction* unary = context->get_def_use_mgr()->GetDef(
+        inst->GetSingleWordInOperand(kExtInstInstructionFirstArg));
+
+    if (unary->opcode() != spv::Op::OpFMul ||
+        !unary->IsFloatingPointFoldingAllowed() ||
+        (unary->GetSingleWordInOperand(0) !=
+         unary->GetSingleWordInOperand(1))) {
+      return false;
+    }
+
+    inst->SetInOperand(kExtInstInstructionInIdx, {GLSLstd450FAbs});
+    inst->SetInOperand(kExtInstInstructionFirstArg,
+                       {unary->GetSingleWordInOperand(0)});
+    return true;
+  };
+}
+
+bool IsAbs(Instruction* inst) {
+  if (inst->opcode() != spv::Op::OpExtInst) {
+    return false;
+  }
+  uint32_t std450 =
+      inst->context()->get_feature_mgr()->GetExtInstImportId_GLSLstd450();
+  uint32_t ext_inst = inst->GetSingleWordInOperand(kExtInstInstructionInIdx);
+  return (inst->GetSingleWordInOperand(kExtInstSetIdInIdx) == std450) &&
+         (ext_inst == GLSLstd450FAbs || ext_inst == GLSLstd450SAbs);
+}
+
+// Merge abs instructions which have a redundant input.
+// abs(abs(x)) = abs(x)
+// abs(-x)     = abs(x)
+FoldingRule RedundantAbsInput() {
+  return [](IRContext* context, Instruction* inst,
+            const std::vector<const analysis::Constant*>&) {
+    assert(IsAbs(inst));
+    Instruction* unary = context->get_def_use_mgr()->GetDef(
+        inst->GetSingleWordInOperand(kExtInstInstructionFirstArg));
+
+    if (IsAbs(unary)) {
+      inst->SetInOperand(
+          kExtInstInstructionFirstArg,
+          {unary->GetSingleWordInOperand(kExtInstInstructionFirstArg)});
+      return true;
+    } else if (unary->opcode() == spv::Op::OpFNegate ||
+               unary->opcode() == spv::Op::OpSNegate) {
+      inst->SetInOperand(kExtInstInstructionFirstArg,
+                         {unary->GetSingleWordInOperand(0)});
+      return true;
+    }
+
+    return false;
+  };
+}
+
 // Returns a folding rule that folds the instruction to operand |foldToArg|
 // (0 or 1) if operand |arg| (0 or 1) is a zero constant.
 FoldingRule RedundantBinaryOpWithZeroOperand(uint32_t arg, uint32_t foldToArg) {
@@ -3555,8 +3676,15 @@ void FoldingRules::AddFoldingRules() {
   uint32_t ext_inst_glslstd450_id =
       feature_manager->GetExtInstImportId_GLSLstd450();
   if (ext_inst_glslstd450_id != 0) {
+    rules_[spv::Op::OpFDiv].push_back(RedundantSqrtInverseSqrt());
     ext_rules_[{ext_inst_glslstd450_id, GLSLstd450FMix}].push_back(
         RedundantFMix());
+    ext_rules_[{ext_inst_glslstd450_id, GLSLstd450Sqrt}].push_back(
+        FoldSqrtSquare());
+    ext_rules_[{ext_inst_glslstd450_id, GLSLstd450FAbs}].push_back(
+        RedundantAbsInput());
+    ext_rules_[{ext_inst_glslstd450_id, GLSLstd450SAbs}].push_back(
+        RedundantAbsInput());
   }
 }
 }  // namespace opt

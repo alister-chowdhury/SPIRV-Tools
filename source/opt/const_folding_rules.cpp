@@ -1903,6 +1903,76 @@ const analysis::Constant* FoldScalarUConvert(
   value = utils::ClearHighBits(value, 64 - operand_type->width());
   return const_mgr->GenerateIntegerConstant(integer_type, value);
 }
+
+const analysis::Constant* GetVectorLength(
+    const analysis::Type* result_type, const analysis::Constant* constant,
+    analysis::ConstantManager* const_mgr) {
+  if (!constant) {
+    return nullptr;
+  }
+
+  std::vector<const analysis::Constant*> components =
+      constant->GetVectorComponents(const_mgr);
+
+  utils::FloatProxy<double> result(0.0);
+  std::vector<uint32_t> words = result.GetWords();
+  const analysis::Constant* result_const =
+      const_mgr->GetConstant(result_type, words);
+
+  for (const analysis::Constant* c : components) {
+    if (!c) {
+      return nullptr;
+    }
+    const analysis::Constant* sqr =
+        FOLD_FPARITH_OP(*)(result_type, c, c, const_mgr);
+    if (!sqr) {
+      return nullptr;
+    }
+    result_const =
+        FOLD_FPARITH_OP(+)(result_type, result_const, sqr, const_mgr);
+  }
+
+  result_const =
+      FoldFTranscendentalUnary(std::sqrt)(result_type, result_const, const_mgr);
+  return result_const;
+}
+
+ConstantFoldingRule FoldVectorLength() {
+  return [](IRContext* context, Instruction* inst,
+            const std::vector<const analysis::Constant*>& constants)
+             -> const analysis::Constant* {
+    if (!constants[1] || !inst->IsFloatingPointFoldingAllowed()) {
+      return nullptr;
+    }
+
+    analysis::ConstantManager* const_mgr = context->get_constant_mgr();
+    analysis::TypeManager* type_mgr = context->get_type_mgr();
+    const analysis::Type* result_type = type_mgr->GetType(inst->type_id());
+    return GetVectorLength(result_type, constants[1], const_mgr);
+  };
+}
+
+ConstantFoldingRule FoldVectorDistance() {
+  return [](IRContext* context, Instruction* inst,
+            const std::vector<const analysis::Constant*>& constants)
+             -> const analysis::Constant* {
+    if (!constants[1] || !constants[2] ||
+        !inst->IsFloatingPointFoldingAllowed()) {
+      return nullptr;
+    }
+
+    analysis::ConstantManager* const_mgr = context->get_constant_mgr();
+    analysis::TypeManager* type_mgr = context->get_type_mgr();
+
+    const analysis::Constant* diff = FoldFPBinaryOp(
+        FOLD_FPARITH_OP(-), type_mgr->GetId(constants[1]->type()),
+        {constants[1], constants[2]}, context);
+
+    const analysis::Type* result_type = type_mgr->GetType(inst->type_id());
+    return GetVectorLength(result_type, diff, const_mgr);
+  };
+}
+
 }  // namespace
 
 void ConstantFoldingRules::AddFoldingRules() {
@@ -2101,6 +2171,13 @@ void ConstantFoldingRules::AddFoldingRules() {
 
     ext_rules_[{ext_inst_glslstd450_id, GLSLstd450Sqrt}].push_back(
         FoldFPUnaryOp(FoldFTranscendentalUnary(std::sqrt)));
+    ext_rules_[{ext_inst_glslstd450_id, GLSLstd450InverseSqrt}].push_back(
+        FoldFPUnaryOp(FoldFTranscendentalUnary(
+            +[](double x) { return 1.0 / std::sqrt(x); })));
+    ext_rules_[{ext_inst_glslstd450_id, GLSLstd450Length}].push_back(
+        FoldVectorLength());
+    ext_rules_[{ext_inst_glslstd450_id, GLSLstd450Distance}].push_back(
+        FoldVectorDistance());
     ext_rules_[{ext_inst_glslstd450_id, GLSLstd450Atan2}].push_back(
         FoldFPBinaryOp(FoldFTranscendentalBinary(std::atan2)));
     ext_rules_[{ext_inst_glslstd450_id, GLSLstd450Pow}].push_back(
