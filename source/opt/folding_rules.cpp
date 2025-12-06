@@ -2147,6 +2147,106 @@ uint32_t GetNumberOfElements(const analysis::Type* type) {
   return 0;
 }
 
+// Propgate unique extractions of up-stream.
+// Cases:
+//  (float3(a, b, c) OP float3(1, 2, 3)).x => (a OP 1)
+FoldingRule PropagateUniqueExtraction() {
+  return [](IRContext* context, Instruction* inst,
+    const std::vector<const analysis::Constant*>&) {
+      assert(inst->opcode() == spv::Op::OpCompositeExtract);
+
+      analysis::DefUseManager* def_mgr = context->get_def_use_mgr();
+      Instruction* parent = def_mgr->GetDef(inst->GetSingleWordInOperand(0));
+
+      // TODO: Should this be it's own list?
+      if (!spvOpcodeIsScalarizable(parent->opcode())) {
+        return false;
+      }
+
+      if (def_mgr->NumUses(parent) > 1) {
+        return false;
+      }
+
+      analysis::TypeManager* type_mgr = context->get_type_mgr();
+      const analysis::Type* parent_type = type_mgr->GetType(parent->type_id());
+      const analysis::Type* type = type_mgr->GetType(inst->type_id());
+
+      if (GetNumberOfElements(parent_type) < GetNumberOfElements(type)) {
+        return false;
+      }
+
+      uint32_t num_indices = inst->NumInOperands() - 1;
+      std::vector<uint32_t> extraction_ids( num_indices );
+      for (uint32_t i = 0; i < num_indices; ++i) {
+        extraction_ids[i] = inst->GetSingleWordInOperand(i + 1);
+      }
+
+      auto PropagateExtraction = [context, def_mgr, type_mgr, &extraction_ids](
+                                     Instruction* child, uint32_t child_index) {
+        Instruction* target =
+            def_mgr->GetDef(child->GetSingleWordInOperand(child_index));
+
+        const analysis::Type* target_type = type_mgr->GetType(target->type_id());
+        const analysis::Type* underlying_type = nullptr;
+        if (auto vec = target_type->AsVector()) {
+          underlying_type = vec->element_type();
+        }
+        else if (auto arr = target_type->AsArray()) {
+          underlying_type = arr->element_type();
+        }
+        else if (auto struc = target_type->AsStruct()) {
+          underlying_type = struc->element_types()[extraction_ids.back()];
+        }
+        else {
+          assert(false);
+        }
+
+        // Attempt to put our new instruction after the target,
+        // unless it doesn't have a BB backing it (globals etc),
+        // in which case just put it before the child.
+        bool insert_after_target = bool(context->get_instr_block(target->result_id()));
+
+        InstructionBuilder ir_builder(
+            context, insert_after_target ? target : child,
+            IRContext::kAnalysisDefUse |
+                IRContext::kAnalysisInstrToBlockMapping);
+
+        if (insert_after_target) {
+          auto ip = ir_builder.GetInsertPoint();
+          ++ip;
+          ir_builder.SetInsertPoint(&*ip);
+        }
+
+        Instruction* new_inst = ir_builder.AddCompositeExtract(
+          type_mgr->GetId(underlying_type), target->result_id(), extraction_ids);
+
+        child->SetInOperand(child_index, {new_inst->result_id()});
+      };
+
+
+      inst->SetOpcode(spv::Op::OpCopyObject);
+      inst->SetInOperands({{SPV_OPERAND_TYPE_ID, {parent->result_id()}}});
+
+      uint32_t num_operands = parent->NumInOperands();
+      parent->SetResultType(inst->type_id());
+
+      if (parent->opcode() == spv::Op::OpPhi) {
+        for (uint32_t i = 0; i < num_operands; i+=2) {
+          PropagateExtraction(parent, i);
+        }
+        return true;
+      }
+
+      for (uint32_t i = 0; i < num_operands; ++i) {
+        PropagateExtraction(parent, i);
+      }
+
+      context->AnalyzeDefUse(parent);
+
+      return true;
+    };
+}
+
 // Returns a map with the set of values that were inserted into an object by
 // the chain of OpCompositeInsertInstruction starting with |inst|.
 // The map will map the index to the value inserted at that index. An empty map
@@ -3719,6 +3819,8 @@ void FoldingRules::AddFoldingRules() {
       CompositeConstructFeedingExtract);
   rules_[spv::Op::OpCompositeExtract].push_back(VectorShuffleFeedingExtract());
   rules_[spv::Op::OpCompositeExtract].push_back(FMixFeedingExtract());
+  rules_[spv::Op::OpCompositeExtract].push_back(
+    PropagateUniqueExtraction());
 
   rules_[spv::Op::OpCompositeInsert].push_back(
       CompositeInsertToCompositeConstruct);
