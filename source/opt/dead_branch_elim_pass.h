@@ -168,6 +168,11 @@ class DeadBranchElimPass : public MemPass {
   // needed to maintain structured control flow.  Assumes that the
   // StructuredCFGAnalysis is valid for the constructs containing |block|.
   bool SimplifyBranch(BasicBlock* block, uint32_t live_lab_id);
+
+  // Walk down the depedency graph and attempt to remove invariant branches and
+  // redirect selection merges with it's parent.
+  bool RemoveEmptyBranches();
+  bool RemoveEmptyBranchesBB(DominatorTreeNode* bb);
 };
 
 }  // namespace opt

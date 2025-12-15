@@ -479,8 +479,12 @@ Pass::Status DeadBranchElimPass::Process() {
   ProcessFunction pfn = [this](Function* fp) {
     return EliminateDeadBranches(fp);
   };
-  bool modified = context()->ProcessReachableCallTree(pfn);
+
+  bool modified = false;
+  if (RemoveEmptyBranches()) modified = true;
+  if (context()->ProcessReachableCallTree(pfn)) modified = true;
   if (modified) FixBlockOrder();
+
   return modified ? Status::SuccessWithChange : Status::SuccessWithoutChange;
 }
 
@@ -645,6 +649,59 @@ bool DeadBranchElimPass::SwitchHasNestedBreak(uint32_t switch_header_id) {
         return (cfg_analysis->ContainingConstruct(inst) == switch_header_id &&
                 bb->GetMergeInst() == nullptr);
       });
+}
+
+bool DeadBranchElimPass::RemoveEmptyBranches() {
+
+  bool modified = false;
+
+  for (auto& func : *get_module()) {
+    if (func.IsDeclaration()) {
+      continue;
+    }
+    DominatorTree& dom_tree =
+      context()->GetDominatorAnalysis(&func)->GetDomTree();
+
+    for (DominatorTreeNode* child : *dom_tree.GetRoot()) {
+      if (RemoveEmptyBranchesBB(child)) {
+        modified = true;
+      }
+    }
+  }
+  return modified;
+}
+
+bool DeadBranchElimPass::RemoveEmptyBranchesBB(DominatorTreeNode* bb) {
+  bool modified = false;
+  for (DominatorTreeNode* child : *bb) {
+    if (RemoveEmptyBranchesBB(child)) {
+      modified = true;
+    }
+  }
+
+  bool is_empty = true;
+  bb->bb_->WhileEachInst([&is_empty](const Instruction* inst) {
+    if (inst->opcode() != spv::Op::OpLabel && inst->result_id() != 0) {
+      is_empty = false;
+    }
+    return is_empty;
+  });
+
+  if (!is_empty) {
+    return modified;
+  }
+
+  // Get a list of phi nodes that depend on this branch, if none of them
+  // already rely on this parent:
+  // 1. Change the parents jump
+  // 2. Change the merge etc
+
+  // How do you handle things like multiple branchs to this single empty phi?
+  DominatorTreeNode* parent = bb->parent_;
+  bb->bb_->ForEachSuccessorLabel([&](uint32_t* x) {
+    std::cout << bb->bb_->GetLabel()->result_id() << " => " << *x << "\n";
+  });
+  return modified;
 }
 
 }  // namespace opt
