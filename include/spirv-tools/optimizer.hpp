@@ -753,6 +753,9 @@ Optimizer::PassToken CreateCombineAccessChainsPass();
 // conform to that model's requirements.
 Optimizer::PassToken CreateUpgradeMemoryModelPass();
 
+// TODO: Desc
+Optimizer::PassToken CreateConditionPropagationPass();
+
 // Create a pass to do code sinking.  Code sinking is a transformation
 // where an instruction is moved into a more deeply nested construct.
 Optimizer::PassToken CreateCodeSinkingPass();

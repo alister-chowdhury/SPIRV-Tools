@@ -212,6 +212,7 @@ Optimizer& Optimizer::RegisterPerformancePasses(bool preserve_interface) {
       .RegisterPass(CreateAggressiveDCEPass(preserve_interface))
       .RegisterPass(CreateVectorDCEPass())
       .RegisterPass(CreateDeadInsertElimPass())
+      .RegisterPass(CreateConditionPropagationPass())
       .RegisterPass(CreateDeadBranchElimPass())
       .RegisterPass(CreateSimplificationPass())
       .RegisterPass(CreateIfConversionPass())
@@ -247,6 +248,7 @@ Optimizer& Optimizer::RegisterSizePasses(bool preserve_interface) {
       .RegisterPass(CreateIfConversionPass())
       .RegisterPass(CreateSimplificationPass())
       .RegisterPass(CreateAggressiveDCEPass(preserve_interface))
+      .RegisterPass(CreateConditionPropagationPass())
       .RegisterPass(CreateDeadBranchElimPass())
       .RegisterPass(CreateBlockMergePass())
       .RegisterPass(CreateLocalAccessChainConvertPass())
@@ -521,6 +523,8 @@ bool Optimizer::RegisterPassFromFlag(const std::string& flag,
     RegisterPass(CreateCCPPass());
   } else if (pass_name == "code-sink") {
     RegisterPass(CreateCodeSinkingPass());
+  } else if (pass_name == "condition-propagation") {
+    RegisterPass(CreateConditionPropagationPass());
   } else if (pass_name == "fix-storage-class") {
     RegisterPass(CreateFixStorageClassPass());
   } else if (pass_name == "O") {
@@ -1038,6 +1042,11 @@ Optimizer::PassToken CreateCombineAccessChainsPass() {
 Optimizer::PassToken CreateUpgradeMemoryModelPass() {
   return MakeUnique<Optimizer::PassToken::Impl>(
       MakeUnique<opt::UpgradeMemoryModel>());
+}
+
+Optimizer::PassToken CreateConditionPropagationPass() {
+  return MakeUnique<Optimizer::PassToken::Impl>(
+    MakeUnique<opt::ConditionPropagationPass>());
 }
 
 Optimizer::PassToken CreateConvertRelaxedToHalfPass() {

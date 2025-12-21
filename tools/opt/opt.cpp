@@ -125,6 +125,11 @@ Options (in lexicographical order):)",
   --compact-ids
                Remap result ids to a compact range starting from %%1 and without
                any gaps.)");
+
+  printf(R"(
+  --condition-propagation
+              TODO desc.)");
+
   printf(R"(
   --convert-local-access-chains
                Convert constant index access chain loads/stores into

@@ -425,6 +425,8 @@ static_library("spvtools_opt") {
     "source/opt/compact_ids_pass.h",
     "source/opt/composite.cpp",
     "source/opt/composite.h",
+    "source/opt/condition_propagation.cpp",
+    "source/opt/condition_propagation.h",
     "source/opt/const_folding_rules.cpp",
     "source/opt/const_folding_rules.h",
     "source/opt/constants.cpp",
