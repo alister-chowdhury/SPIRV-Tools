@@ -75,17 +75,10 @@ class ConditionPropagationPass : public Pass {
 
   bool ProcessSelect(Instruction* inst);
   bool ProcessSelectionMerge(Instruction* inst);
-
   bool ProcessConditional(Instruction* inst);
-  bool ApplyReplacements(BasicBlock* root_bb,
-                         const std::unordered_set<BasicBlock*>& filtered_bb,
-                         condprop::InstReplacements& inst_repl);
-  bool ApplyReplacementsToBB(BasicBlock* bb,
-                             condprop::InstReplacements& inst_repl);
 
   bool ProcessSwitch(Instruction* inst);
 
-  condprop::Rules rules;
 };
 
 }  // namespace opt
